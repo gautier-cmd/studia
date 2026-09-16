@@ -234,9 +234,42 @@
 
 {% if next_id %}
 <script>
-    document.getElementById('player').addEventListener('ended', function () {
-        window.location.href = {{ url_for('watch_video', media_id=next_id) | tojson }};
-    });
+    (function () {
+        var player = document.getElementById('player');
+
+        // La reprise (ou un repère ?t=) peut positionner la vidéo à
+        // quelques instants de sa fin : "ended" se déclenche alors
+        // sans qu'aucune image n'ait réellement défilé, et il ne faut
+        // pas enchaîner dans ce cas - seulement quand la vidéo s'est
+        // vraiment terminée en cours de lecture.
+        //
+        // "played" (HTMLMediaElement.played) est une mesure native de
+        // ce que le navigateur a réellement joué, distincte de
+        // currentTime : un positionnement par script n'y ajoute rien
+        // tant que la lecture n'a pas défilé. Le plancher (0,25s) ne
+        // dépend pas du temps écoulé depuis le chargement de la page
+        // (ça casserait sur une vidéo très courte) : il ne dépend que
+        // de la quantité de vidéo réellement jouée, donc s'applique
+        // pareil quelle que soit sa durée totale.
+        var GENUINE_PLAYBACK_FLOOR_SECONDS = 0.25;
+
+        function hasPlayedGenuinely() {
+            var ranges = player.played;
+            var total = 0;
+
+            for (var i = 0; i < ranges.length; i++) {
+                total += ranges.end(i) - ranges.start(i);
+            }
+
+            return total >= GENUINE_PLAYBACK_FLOOR_SECONDS;
+        }
+
+        player.addEventListener('ended', function () {
+            if (hasPlayedGenuinely()) {
+                window.location.href = {{ url_for('watch_video', media_id=next_id) | tojson }};
+            }
+        });
+    })();
 </script>
 {% endif %}
 {% endblock %}

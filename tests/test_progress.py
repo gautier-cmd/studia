@@ -1,8 +1,16 @@
 """Tests de la sauvegarde de la position de lecture (vidéo).
 
-Deux règles métier, testées d'abord isolément (is_video_completed,
-aggregate_item_progress), puis via les routes qui les utilisent
-(POST /media/<id>/progress, reprise sur GET /watch/<id>).
+Règles métier testées d'abord isolément (is_video_completed,
+aggregate_item_progress, resolve_resume_seconds,
+resolve_watch_target_video_id), puis via les routes qui les utilisent
+(POST /media/<id>/progress, reprise sur GET /watch/<id>, bouton
+"Regarder" sur /item/<id>).
+
+L'écouteur "ended" du gabarit vidéo (garde-fou "played", voir
+video_player.html) n'est vérifié qu'au niveau du gabarit rendu : il
+n'y a pas de navigateur dans cette suite pour simuler une vraie
+lecture, donc pas de simulation de timing - seulement la présence du
+garde-fou, en non-régression.
 """
 
 from __future__ import annotations
@@ -20,6 +28,8 @@ from studia import (  # noqa: E402
     aggregate_item_progress,
     create_app,
     is_video_completed,
+    resolve_resume_seconds,
+    resolve_watch_target_video_id,
 )
 
 
@@ -69,6 +79,44 @@ def test_agregation_un_termine_un_non_en_cours() -> None:
 
 def test_agregation_tous_termines() -> None:
     assert aggregate_item_progress([(True, True), (True, True)]) == "completed"
+
+
+# --- resolve_resume_seconds : une vidéo terminée repart du début -------
+
+
+def test_resume_sans_ligne_progress() -> None:
+    assert resolve_resume_seconds(None) is None
+
+
+def test_resume_video_terminee_repart_du_debut() -> None:
+    assert resolve_resume_seconds({"completed": 1, "position_seconds": 95.0}) is None
+
+
+def test_resume_video_en_cours_reprend_sa_position() -> None:
+    assert resolve_resume_seconds({"completed": 0, "position_seconds": 42.0}) == 42
+
+
+def test_resume_sans_position_enregistree() -> None:
+    assert resolve_resume_seconds({"completed": 0, "position_seconds": None}) is None
+
+
+# --- resolve_watch_target_video_id : cible du bouton "Regarder" --------
+
+
+def test_cible_regarder_aucune_video() -> None:
+    assert resolve_watch_target_video_id([], set()) is None
+
+
+def test_cible_regarder_rien_de_commence_prend_la_premiere() -> None:
+    assert resolve_watch_target_video_id([1, 2, 3], set()) == 1
+
+
+def test_cible_regarder_premiere_video_non_terminee() -> None:
+    assert resolve_watch_target_video_id([1, 2, 3], {1}) == 2
+
+
+def test_cible_regarder_tout_termine_revient_a_la_premiere() -> None:
+    assert resolve_watch_target_video_id([1, 2, 3], {1, 2, 3}) == 1
 
 
 # --- Routes : écriture, reprise ----------------------------------------
@@ -275,3 +323,83 @@ def test_item_sans_media_principal_jamais_termine(client) -> None:
         conn.close()
 
     assert status == "not_started"
+
+
+def test_video_terminee_repart_du_debut_a_la_reouverture(client) -> None:
+    media_id = media_id_by_relative_path(
+        client, "01 - Bases/001 - Interface.mp4"
+    )
+    set_duration(client, media_id, 100.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "99"})
+    assert fetch_progress_row(client, media_id)["completed"] == 1
+
+    response = client.get(f"/watch/{media_id}")
+
+    assert response.status_code == 200
+    assert b"player.currentTime =" not in response.data
+
+
+def test_repere_explicite_fonctionne_meme_sur_video_terminee(client) -> None:
+    media_id = media_id_by_relative_path(
+        client, "01 - Bases/001 - Interface.mp4"
+    )
+    set_duration(client, media_id, 100.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "99"})
+    assert fetch_progress_row(client, media_id)["completed"] == 1
+
+    response = client.get(f"/watch/{media_id}?t=50")
+
+    assert response.status_code == 200
+    assert b"player.currentTime = 50;" in response.data
+
+
+def test_bouton_regarder_pointe_vers_la_premiere_video_non_terminee(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+    assert fetch_progress_row(client, first_id)["completed"] == 1
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert f'href="/watch/{second_id}">▶ Regarder' in data
+
+
+def test_bouton_regarder_repart_de_la_premiere_video_si_tout_est_termine(
+    client,
+) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+    set_duration(client, first_id, 100.0)
+    set_duration(client, second_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+    client.post(f"/media/{second_id}/progress", data={"position_seconds": "99"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert f'href="/watch/{first_id}">▶ Regarder' in data
+
+
+def test_enchainement_automatique_garde_fou_present(client) -> None:
+    # Non-régression sur le gabarit uniquement (voir docstring du
+    # fichier) : le garde-fou "played" doit rester en place autour de
+    # la navigation, pas une vérification du comportement réel du
+    # navigateur.
+    current_id = media_id_by_relative_path(
+        client, "01 - Bases/001 - Interface.mp4"
+    )
+
+    response = client.get(f"/watch/{current_id}")
+    data = response.data.decode()
+
+    assert "hasPlayedGenuinely" in data
+    assert "player.played" in data
+    assert "window.location.href" in data

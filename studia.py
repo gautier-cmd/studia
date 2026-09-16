@@ -283,13 +283,68 @@ def save_video_progress(
     conn.commit()
 
 
-def fetch_media_position(conn, media_id: int) -> float | None:
-    row = conn.execute(
-        "SELECT position_seconds FROM progress WHERE media_id = ? AND user_id = ?",
+def fetch_media_progress(conn, media_id: int):
+    """Ligne de progression d'un média (position_seconds, completed),
+    ou None si jamais ouvert."""
+
+    return conn.execute(
+        "SELECT position_seconds, completed FROM progress WHERE media_id = ? AND user_id = ?",
         (media_id, LOCAL_USER_ID),
     ).fetchone()
 
-    return row["position_seconds"] if row and row["position_seconds"] is not None else None
+
+def resolve_resume_seconds(progress_row) -> int | None:
+    """Position à proposer pour la reprise automatique (sans repère
+    explicite) : la position enregistrée tant que la vidéo n'est pas
+    terminée. Une vidéo déjà terminée repart du début si on la
+    rouvre - ouvrir une vidéo qu'on a déjà finie, c'est vouloir la
+    revoir, pas reprendre à sa dernière seconde. La ligne progress
+    elle-même n'est pas modifiée : seule cette position de départ à
+    l'ouverture change.
+    """
+
+    if progress_row is None or progress_row["completed"]:
+        return None
+
+    if progress_row["position_seconds"] is None:
+        return None
+
+    return int(progress_row["position_seconds"])
+
+
+def resolve_watch_target_video_id(
+    video_ids: list[int], completed_ids: set[int]
+) -> int | None:
+    """Cible du bouton "Regarder" : la première vidéo non terminée
+    dans l'ordre du programme ; si toutes le sont, la première vidéo
+    de l'item (la rouvrir, c'est vouloir la revoir depuis le début -
+    même règle que resolve_resume_seconds). None si l'item n'a aucune
+    vidéo.
+    """
+
+    if not video_ids:
+        return None
+
+    for video_id in video_ids:
+        if video_id not in completed_ids:
+            return video_id
+
+    return video_ids[0]
+
+
+def fetch_completed_video_ids(conn, item_id: int) -> set[int]:
+    rows = conn.execute(
+        """
+        SELECT media.id
+        FROM media
+        JOIN progress
+            ON progress.media_id = media.id AND progress.user_id = ?
+        WHERE media.item_id = ? AND progress.completed = 1
+        """,
+        (LOCAL_USER_ID, item_id),
+    ).fetchall()
+
+    return {row["id"] for row in rows}
 
 
 def aggregate_item_progress(media_progress: list[tuple[bool, bool]]) -> str:
@@ -1032,6 +1087,8 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                 """,
                 (item_id,),
             ).fetchall()
+
+            completed_video_ids = fetch_completed_video_ids(conn, item_id)
         finally:
             conn.close()
 
@@ -1043,10 +1100,8 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
 
         chapters = build_programme_chapters(media_rows)
 
-        first_video = next(
-            (m for m in media_rows if m["media_type"] == "video"), None
-        )
-        first_video_id = first_video["id"] if first_video else None
+        video_ids = [m["id"] for m in media_rows if m["media_type"] == "video"]
+        first_video_id = resolve_watch_target_video_id(video_ids, completed_video_ids)
 
         total_duration = sum(m["duration_seconds"] or 0 for m in media_rows)
 
@@ -1296,7 +1351,7 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                 abort(404)
 
             playlist = fetch_video_playlist(conn, media["item_id"])
-            stored_position = fetch_media_position(conn, media_id)
+            stored_progress = fetch_media_progress(conn, media_id)
         finally:
             conn.close()
 
@@ -1319,12 +1374,12 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         video_title = clean_file_title(filename)
 
         # Un repère explicite (?t=, cliqué depuis la note) l'emporte
-        # toujours sur la reprise automatique - une personne qui clique
-        # un repère précis veut aller là, pas reprendre où elle en
-        # était avant.
+        # toujours sur la reprise automatique, même sur une vidéo déjà
+        # terminée - une personne qui clique un repère précis veut
+        # aller là, un geste volontaire distinct de la reprise.
         seek_seconds = request.args.get("t", type=int)
-        if seek_seconds is None and stored_position is not None:
-            seek_seconds = int(stored_position)
+        if seek_seconds is None:
+            seek_seconds = resolve_resume_seconds(stored_progress)
 
         return render_template(
             "video_player.html",
