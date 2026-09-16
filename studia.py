@@ -1259,6 +1259,29 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
 
         return {"updated_at": updated_at}
 
+    @app.route("/item/<int:item_id>/reset-progress", methods=["POST"])
+    def reset_item_progress(item_id: int):
+        conn = connect_database(app.config["DB_PATH"])
+
+        try:
+            item = conn.execute(
+                "SELECT id FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+
+            if item is None:
+                abort(404)
+
+            conn.execute(
+                "DELETE FROM progress WHERE media_id IN "
+                "(SELECT id FROM media WHERE item_id = ?)",
+                (item_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        return redirect(url_for("item_detail", item_id=item_id))
+
     @app.route("/notes-orphelines")
     def orphan_notes():
         conn = connect_database(app.config["DB_PATH"])

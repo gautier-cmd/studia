@@ -94,6 +94,9 @@
                         <button type="button" class="hero-menu-item" data-open-dialog="dialog-search" role="menuitem">Rechercher / actualiser les métadonnées</button>
                         {% endif %}
                         <button type="button" class="hero-menu-item" data-open-dialog="dialog-tech" role="menuitem">Voir les informations techniques</button>
+                        {% if progress_status != 'not_started' %}
+                        <button type="button" class="hero-menu-item" data-open-dialog="dialog-reset-progress" role="menuitem">Remettre la progression à zéro</button>
+                        {% endif %}
                     </div>
                 </details>
             </div>
@@ -203,6 +206,23 @@
         </dl>
         <p class="hint">L'import manuel d'une couverture n'est pas encore disponible.</p>
     </dialog>
+
+    {% if progress_status != 'not_started' %}
+    <dialog id="dialog-reset-progress" class="modal">
+        <form method="dialog" class="modal-header">
+            <h3>Remettre la progression à zéro</h3>
+            <button type="submit" class="modal-close" aria-label="Fermer">✕</button>
+        </form>
+        <p class="hint">
+            Efface la progression de lecture de « {{ item['title'] }} » —
+            les notes, les métadonnées et les fichiers ne sont pas
+            concernés. Cette action est irréversible.
+        </p>
+        <form method="post" action="{{ url_for('reset_item_progress', item_id=item['id']) }}">
+            <button class="btn-mini reject" type="submit">Remettre à zéro</button>
+        </form>
+    </dialog>
+    {% endif %}
 
     <div class="tabs" role="tablist">
         <button type="button" class="tab active" data-tab-target="apropos" role="tab" aria-selected="true">À propos</button>

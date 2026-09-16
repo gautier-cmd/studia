@@ -602,3 +602,66 @@ def test_etats_de_lecon_dans_la_playlist(client) -> None:
     data = response.data.decode()
 
     assert '<span class="file-state file-state-done">✓ Terminé</span>' in data
+
+
+# --- Remise à zéro de la progression --------------------------------------
+
+
+def test_remise_a_zero_efface_les_lignes_progress_de_l_item(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+    client.post(f"/media/{second_id}/progress", data={"position_seconds": "10"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.post(f"/item/{item_id}/reset-progress")
+
+    assert response.status_code in (302, 303)
+    assert fetch_progress_row(client, first_id) is None
+    assert fetch_progress_row(client, second_id) is None
+
+
+def test_remise_a_zero_ne_touche_pas_a_la_note(client) -> None:
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+    client.post(f"/item/{item_id}/note", data={"text": "À revoir plus tard"})
+
+    client.post(f"/item/{item_id}/reset-progress")
+
+    response = client.get(f"/item/{item_id}")
+    assert "À revoir plus tard" in response.data.decode()
+
+
+def test_remise_a_zero_item_inconnu_404(client) -> None:
+    response = client.post("/item/999999/reset-progress")
+
+    assert response.status_code == 404
+
+
+def test_menu_remise_a_zero_absent_sans_progression(client) -> None:
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+
+    assert "dialog-reset-progress" not in response.data.decode()
+
+
+def test_menu_remise_a_zero_present_avec_progression(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "10"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+
+    assert "dialog-reset-progress" in response.data.decode()
