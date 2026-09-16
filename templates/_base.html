@@ -29,9 +29,6 @@
 <body class="{% block body_class %}{% endblock %}">
     <!-- {% block active_nav %}{% endblock %} -->
     {% set current_nav = self.active_nav() %}
-    <button type="button" class="sidebar-toggle" id="sidebar-toggle" aria-label="Ouvrir le menu" aria-expanded="false" aria-controls="sidebar">
-        <svg class="icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
-    </button>
     <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
     <div class="app-shell">
         <aside class="sidebar" id="sidebar">
@@ -73,6 +70,11 @@
         </aside>
 
         <div class="app-main">
+            <div class="mobile-topbar">
+                <button type="button" class="sidebar-toggle" id="sidebar-toggle" aria-label="Ouvrir le menu" aria-expanded="false" aria-controls="sidebar">
+                    <svg class="icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+                </button>
+            </div>
             {% block header %}{% endblock %}
             {% block content %}{% endblock %}
         </div>

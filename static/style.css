@@ -139,14 +139,20 @@ body.relaxed {
     min-width: 0;
 }
 
-/* Bouton du tiroir et fond d'estompage — smartphone uniquement (voir
-   palier <720px ci-dessous). */
+/* Barre du tiroir et fond d'estompage — smartphone uniquement (voir
+   palier <720px ci-dessous). La barre occupe sa propre place en haut
+   de .app-main, en flux normal (pas en position fixe) : un bouton fixe
+   resterait plaqué à l'écran pendant le défilement et finirait par
+   recouvrir un contenu qui, lui, a défilé en dessous — collée en haut
+   (sticky) plutôt que fixe, elle garde son fond opaque et ne
+   "superpose" donc jamais vraiment le texte, elle reste juste au-dessus
+   au même titre qu'un en-tête normal. */
+.mobile-topbar {
+    display: none;
+}
+
 .sidebar-toggle {
     display: none;
-    position: fixed;
-    top: var(--space-16);
-    left: var(--space-16);
-    z-index: 30;
     width: 40px;
     height: 40px;
     align-items: center;
@@ -225,9 +231,21 @@ body.relaxed {
 }
 
 /* Smartphone (<720px) : sidebar en tiroir, masquée par défaut, ouverte
-   par le bouton hamburger fixe — jamais superposée en permanence au
-   contenu (point 28 de la revue). */
+   par le bouton hamburger de la barre du haut — jamais superposée en
+   permanence au contenu (point 28 de la revue). */
 @media (max-width: 719px) {
+    .mobile-topbar {
+        display: flex;
+        align-items: center;
+        position: sticky;
+        top: 0;
+        z-index: 15;
+        height: 56px;
+        padding: 0 var(--space-16);
+        background: var(--color-bg);
+        border-bottom: 1px solid var(--color-border);
+    }
+
     .sidebar-toggle {
         display: flex;
     }
@@ -271,10 +289,6 @@ body.relaxed {
 
     body.sidebar-open .sidebar-backdrop {
         display: block;
-    }
-
-    .app-main {
-        padding-top: var(--space-64);
     }
 }
 
@@ -649,6 +663,31 @@ dialog.modal::backdrop {
 
     .hero-cover {
         max-width: 100%;
+    }
+
+    /* Les trois contrôles ne tiennent pas sur une ligne sans que leurs
+       libellés se coupent. Le CTA principal garde le menu ⋮ à côté
+       (assez de place à eux deux) ; le CTA secondaire passe seul en
+       pleine largeur en dessous, quel que soit son ordre dans le
+       gabarit (l'ordre visuel est fixé ici, pas dans le HTML). */
+    .hero-actions {
+        flex-wrap: wrap;
+    }
+
+    .hero-actions > .btn-primary {
+        flex: 1 1 auto;
+        order: 0;
+        text-align: center;
+    }
+
+    .hero-actions > .hero-menu {
+        order: 1;
+    }
+
+    .hero-actions > .btn-secondary {
+        order: 2;
+        flex: 1 1 100%;
+        text-align: center;
     }
 }
 
