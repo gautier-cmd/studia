@@ -1077,6 +1077,44 @@ body.page-player .card {
     color: var(--color-text-secondary);
 }
 
+/* Progression sur la carte de la grille (section 17 de la spec) : rien
+   si l'item n'a jamais été ouvert (pas de bloc du tout, voir le
+   gabarit) ; barre + pourcentage en cours ; simplement "100 %" une
+   fois terminé, sans barre ni badge supplémentaire. */
+
+.card-progress {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+}
+
+.progress-track {
+    flex: 1;
+    height: 4px;
+    border-radius: var(--radius-full);
+    background: var(--color-progress-track);
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: var(--color-accent);
+    border-radius: var(--radius-full);
+}
+
+.progress-label {
+    flex-shrink: 0;
+    font-size: var(--font-size-annotation);
+    color: var(--color-text-secondary);
+    min-width: 2.5em;
+    text-align: right;
+}
+
+.card-progress-done {
+    font-size: var(--font-size-annotation);
+    color: var(--color-accent);
+}
+
 /* Fiche d'un item : liste de fichiers */
 
 .file-row {

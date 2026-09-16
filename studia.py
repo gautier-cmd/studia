@@ -392,6 +392,63 @@ def fetch_item_progress_status(conn, item_id: int) -> str:
     )
 
 
+def fetch_item_video_progress(conn, item_id: int) -> dict:
+    """Statut ('not_started'/'in_progress'/'completed', voir
+    aggregate_item_progress) et pourcentage d'un item, à partir de ses
+    vidéos uniquement - seul type suivi pour l'instant, un livre ou un
+    audiobook n'a donc jamais de ligne ici.
+
+    "percent" est le nombre de vidéos terminées sur le nombre total de
+    vidéos, jamais les secondes vues sur la durée totale : ça
+    bougerait en permanence sans jamais correspondre exactement à la
+    coche "terminé" d'une vidéo précise.
+    """
+
+    rows = conn.execute(
+        """
+        SELECT
+            progress.completed IS NOT NULL AS has_progress,
+            COALESCE(progress.completed, 0) AS completed
+        FROM media
+        LEFT JOIN progress
+            ON progress.media_id = media.id AND progress.user_id = ?
+        WHERE media.item_id = ? AND media.media_type = 'video'
+        """,
+        (LOCAL_USER_ID, item_id),
+    ).fetchall()
+
+    total = len(rows)
+    completed_count = sum(1 for row in rows if row["completed"])
+    status = aggregate_item_progress(
+        [(bool(row["has_progress"]), bool(row["completed"])) for row in rows]
+    )
+    percent = round(completed_count / total * 100) if total else 0
+
+    return {"status": status, "percent": percent}
+
+
+def fetch_video_progress_states(conn, item_id: int) -> dict[int, str]:
+    """media_id -> 'in_progress' ou 'completed' pour chaque vidéo de
+    l'item ayant une ligne progress ; absente du dict sinon (non
+    commencée - état par défaut, rien à afficher)."""
+
+    rows = conn.execute(
+        """
+        SELECT media.id, progress.completed
+        FROM media
+        JOIN progress
+            ON progress.media_id = media.id AND progress.user_id = ?
+        WHERE media.item_id = ? AND media.media_type = 'video'
+        """,
+        (LOCAL_USER_ID, item_id),
+    ).fetchall()
+
+    return {
+        row["id"]: ("completed" if row["completed"] else "in_progress")
+        for row in rows
+    }
+
+
 def fetch_video_playlist(conn, item_id: int):
     """Toutes les vidéos d'un item, dans l'ordre de sort_order."""
 
@@ -1025,6 +1082,9 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                     describe_count(item["chapter_count"], "chapitres"),
                 )
                 item["author"] = fetch_item_author(library_root, conn, item)
+                video_progress = fetch_item_video_progress(conn, item["id"])
+                item["progress_status"] = video_progress["status"]
+                item["progress_percent"] = video_progress["percent"]
                 type_counts[item["item_type"]] = type_counts.get(item["item_type"], 0) + 1
                 items.append(item)
         finally:

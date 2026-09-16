@@ -27,6 +27,7 @@ from library_index import scan_library  # noqa: E402
 from studia import (  # noqa: E402
     aggregate_item_progress,
     create_app,
+    fetch_item_video_progress,
     is_video_completed,
     resolve_resume_seconds,
     resolve_watch_target_video_id,
@@ -403,3 +404,106 @@ def test_enchainement_automatique_garde_fou_present(client) -> None:
     assert "hasPlayedGenuinely" in data
     assert "player.played" in data
     assert "window.location.href" in data
+
+
+# --- fetch_item_video_progress : statut + pourcentage d'un item -------
+
+
+def test_progression_item_rien_commence(client) -> None:
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    db_path = client.application.config["DB_PATH"]
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    try:
+        result = fetch_item_video_progress(conn, item_id)
+    finally:
+        conn.close()
+
+    assert result == {"status": "not_started", "percent": 0}
+
+
+def test_progression_item_une_video_sur_deux_terminee(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    db_path = client.application.config["DB_PATH"]
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    try:
+        result = fetch_item_video_progress(conn, item_id)
+    finally:
+        conn.close()
+
+    assert result == {"status": "in_progress", "percent": 50}
+
+
+def test_progression_item_toutes_les_videos_terminees(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+    set_duration(client, first_id, 100.0)
+    set_duration(client, second_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+    client.post(f"/media/{second_id}/progress", data={"position_seconds": "99"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    db_path = client.application.config["DB_PATH"]
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    try:
+        result = fetch_item_video_progress(conn, item_id)
+    finally:
+        conn.close()
+
+    assert result == {"status": "completed", "percent": 100}
+
+
+# --- Carte de la grille -------------------------------------------------
+
+
+def test_carte_sans_progression_ne_montre_rien(client) -> None:
+    response = client.get("/")
+    data = response.data.decode()
+
+    assert "card-progress" not in data
+
+
+def test_carte_en_cours_montre_barre_et_pourcentage(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+
+    response = client.get("/")
+    data = response.data.decode()
+
+    assert 'class="card-progress"' in data
+    assert "width: 50%;" in data
+    assert "50 %" in data
+    assert "card-progress-done" not in data
+
+
+def test_carte_terminee_montre_100_pourcent_sans_barre(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+    set_duration(client, first_id, 100.0)
+    set_duration(client, second_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+    client.post(f"/media/{second_id}/progress", data={"position_seconds": "99"})
+
+    response = client.get("/")
+    data = response.data.decode()
+
+    assert 'class="card-progress-done"' in data
+    assert "100 %" in data
+    assert 'class="card-progress"' not in data
+
