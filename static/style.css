@@ -629,13 +629,26 @@ dialog.modal::backdrop {
     cursor: pointer;
 }
 
-@media (max-width: 700px) {
+/* Tablette (720–1119px) : image et espacements réduits, toujours côte
+   à côte (point 29 de la revue). */
+@media (max-width: 1119px) {
+    .hero {
+        gap: var(--space-20);
+    }
+
+    .hero-cover {
+        max-width: 200px;
+    }
+}
+
+/* Smartphone (<720px) : image au-dessus, texte dessous (point 29). */
+@media (max-width: 719px) {
     .hero {
         flex-direction: column;
     }
 
     .hero-cover {
-        max-width: 200px;
+        max-width: 100%;
     }
 }
 
