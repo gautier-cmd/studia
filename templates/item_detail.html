@@ -325,13 +325,80 @@
             var dialog = document.getElementById(button.getAttribute('data-open-dialog'));
             var menu = button.closest('details.hero-menu');
             if (menu) { menu.open = false; }
-            if (dialog) { dialog.showModal(); }
+            if (dialog) {
+                // Le bouton cliqué est une entrée du menu ⋮, qui vient
+                // de se refermer : il devient invisible (donc plus
+                // focalisable) tant que le menu n'est pas rouvert. Le
+                // focus revient plutôt sur le bouton ⋮ lui-même, qui
+                // reste visible.
+                dialog._opener = (menu && menu.querySelector('summary')) || button;
+                dialog.showModal();
+            }
         });
     });
 
     document.querySelectorAll('dialog.modal').forEach(function (dialog) {
+        // Le focus revient à son bouton d'origine à la fermeture — posé
+        // sur chaque déclencheur explicite (croix, clic hors du cadre,
+        // Échap intercepté plus bas) plutôt que sur le seul évènement
+        // "close" natif, qui ne s'est pas montré fiable ici à l'usage
+        // (jamais déclenché dans nos essais, sans qu'on en comprenne la
+        // raison — gardé quand même en secours, au cas où). setTimeout(0) :
+        // on laisse la fermeture elle-même se terminer avant de redonner
+        // le focus, sinon une restauration native concurrente pourrait le
+        // reprendre juste après.
+        function restoreFocus() {
+            var opener = dialog._opener;
+            if (!opener) {
+                return;
+            }
+            setTimeout(function () { opener.focus(); }, 0);
+        }
+
         dialog.addEventListener('click', function (event) {
-            if (event.target === dialog) { dialog.close(); }
+            if (event.target === dialog) {
+                dialog.close();
+                restoreFocus();
+            }
+        });
+
+        var closeButton = dialog.querySelector('.modal-close');
+        if (closeButton) {
+            closeButton.addEventListener('click', restoreFocus);
+        }
+
+        dialog.addEventListener('close', restoreFocus);
+
+        // Le piège de focus natif de <dialog> ne s'est pas montré fiable
+        // à l'usage (Tab en fait sortir dès qu'il n'y a qu'un seul
+        // élément focalisable dedans, et Échap ferme sans jamais
+        // redonner le focus) : on refait les deux à la main plutôt que
+        // de leur faire confiance.
+        dialog.addEventListener('keydown', function (event) {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                dialog.close();
+                restoreFocus();
+                return;
+            }
+            if (event.key !== 'Tab') {
+                return;
+            }
+            var focusable = Array.prototype.slice.call(
+                dialog.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')
+            ).filter(function (el) { return el.offsetParent !== null; });
+            if (focusable.length === 0) {
+                return;
+            }
+            var first = focusable[0];
+            var last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
         });
     });
 

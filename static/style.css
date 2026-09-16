@@ -31,6 +31,24 @@ body.relaxed {
     line-height: var(--line-height-body);
 }
 
+/* Focus clavier visible partout (point 34 de la revue) — un repère
+   générique pour tout élément interactif natif, dans le même style
+   que les repères déjà posés au cas par cas (sidebar, recherche,
+   filtres, tri) : ceux-ci, plus spécifiques, l'emportent tels quels
+   là où ils existent déjà. Ce repère générique couvre le reste
+   (onglets, boutons de la barre de notes, liens de fichiers, bouton
+   du tiroir, croix de fermeture, ▶ des accordéons...) sans avoir à
+   les lister un par un. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+}
+
 /* Coquille globale : sidebar permanente + zone de contenu.
    Tranche 2 — la sidebar est la même partout, seul l'item actif change
    (voir templates/_base.html, bloc "active_nav"). */
@@ -545,10 +563,14 @@ body.page-grid .header nav a:hover {
     cursor: pointer;
 }
 
-.hero-menu-item:hover,
+.hero-menu-item:hover {
+    background: var(--color-nav-hover-bg);
+}
+
 .hero-menu-item:focus-visible {
     background: var(--color-nav-hover-bg);
-    outline: none;
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
 }
 
 /* Modals (métadonnées, couverture, informations techniques) */
@@ -744,6 +766,14 @@ dialog.modal::backdrop {
     display: none;
 }
 
+/* .programme-chapter coupe tout dépassement (overflow: hidden, pour
+   ses coins arrondis) : un contour dessiné à l'extérieur du bouton
+   serait donc rogné. Contour rentrant plutôt que le décalage habituel
+   vers l'extérieur. */
+.programme-chapter summary:focus-visible {
+    outline-offset: -2px;
+}
+
 .programme-chapter .chevron {
     display: inline-block;
     transition: transform var(--transition-fast);
@@ -831,6 +861,13 @@ body.page-grid .card {
 
 body.page-grid .card:hover {
     transform: translateY(-3px);
+}
+
+/* La carte coupe tout dépassement (overflow: hidden, coins arrondis
+   autour de la couverture) : un contour dessiné à l'extérieur serait
+   invisible, justement là où il compte le plus. */
+body.page-grid .card:focus-visible {
+    outline-offset: -2px;
 }
 
 body.page-player .card {
