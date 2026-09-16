@@ -55,7 +55,7 @@ body.relaxed {
     padding: 0 var(--space-8);
 }
 
-.sidebar-logo img {
+.sidebar-logo-full {
     display: block;
     height: 28px;
     width: auto;
@@ -137,6 +137,145 @@ body.relaxed {
 .app-main {
     flex: 1;
     min-width: 0;
+}
+
+/* Bouton du tiroir et fond d'estompage — smartphone uniquement (voir
+   palier <720px ci-dessous). */
+.sidebar-toggle {
+    display: none;
+    position: fixed;
+    top: var(--space-16);
+    left: var(--space-16);
+    z-index: 30;
+    width: 40px;
+    height: 40px;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-bg-sidebar);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    color: var(--color-text);
+    cursor: pointer;
+}
+
+.sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 19;
+}
+
+.sidebar-logo-picto {
+    display: none;
+}
+
+/* Repères de palier (tokens.css, section "Breakpoints") : 720 / 1120 /
+   1440. Une variable ne peut pas être utilisée dans une condition
+   @media, ces valeurs sont donc répétées en dur ici — à garder
+   synchronisées avec tokens.css si la dérivation change. */
+
+/* Desktop intermédiaire (1120–1439px) : sidebar réduite, même contenu,
+   moins large (point 28 de la revue). */
+@media (max-width: 1439px) {
+    .sidebar {
+        width: 200px;
+    }
+}
+
+/* Tablette, portrait et paysage confondus (720–1119px) : icônes
+   seules, pictogramme à la place du mot-symbole, libellés et
+   signature masqués — chaque lien garde son libellé en infobulle
+   (title). */
+@media (max-width: 1119px) {
+    .sidebar {
+        width: 72px;
+        padding: var(--space-20) var(--space-12);
+    }
+
+    .sidebar-logo {
+        padding: 0;
+        margin-bottom: var(--space-24);
+        display: flex;
+        justify-content: center;
+    }
+
+    .sidebar-logo-full {
+        display: none;
+    }
+
+    .sidebar-logo-picto {
+        display: block;
+        width: 28px;
+        height: 28px;
+    }
+
+    .sidebar-nav-item {
+        justify-content: center;
+        padding: var(--space-8);
+    }
+
+    .sidebar-nav-item span {
+        display: none;
+    }
+
+    .sidebar-footer {
+        display: none;
+    }
+}
+
+/* Smartphone (<720px) : sidebar en tiroir, masquée par défaut, ouverte
+   par le bouton hamburger fixe — jamais superposée en permanence au
+   contenu (point 28 de la revue). */
+@media (max-width: 719px) {
+    .sidebar-toggle {
+        display: flex;
+    }
+
+    .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: 240px;
+        padding: var(--space-24) var(--space-16);
+        transform: translateX(-100%);
+        transition: transform var(--transition-slow);
+        z-index: 20;
+        overflow-y: auto;
+    }
+
+    .sidebar-logo-full {
+        display: block;
+    }
+
+    .sidebar-logo-picto {
+        display: none;
+    }
+
+    .sidebar-nav-item {
+        justify-content: flex-start;
+    }
+
+    .sidebar-nav-item span {
+        display: inline;
+    }
+
+    .sidebar-footer {
+        display: block;
+    }
+
+    body.sidebar-open .sidebar {
+        transform: translateX(0);
+    }
+
+    body.sidebar-open .sidebar-backdrop {
+        display: block;
+    }
+
+    .app-main {
+        padding-top: var(--space-64);
+    }
 }
 
 .container {

@@ -29,10 +29,15 @@
 <body class="{% block body_class %}{% endblock %}">
     <!-- {% block active_nav %}{% endblock %} -->
     {% set current_nav = self.active_nav() %}
+    <button type="button" class="sidebar-toggle" id="sidebar-toggle" aria-label="Ouvrir le menu" aria-expanded="false" aria-controls="sidebar">
+        <svg class="icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+    </button>
+    <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
     <div class="app-shell">
-        <aside class="sidebar">
+        <aside class="sidebar" id="sidebar">
             <div class="sidebar-logo">
-                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="Studia">
+                <img class="sidebar-logo-full" src="{{ url_for('static', filename='images/logo.png') }}" alt="Studia">
+                <img class="sidebar-logo-picto" src="{{ url_for('static', filename='images/logo-picto.png') }}" alt="Studia">
             </div>
 
             <nav class="sidebar-nav" aria-label="Navigation principale">
@@ -48,6 +53,7 @@
                     {% if item.href %}
                     <a class="sidebar-nav-item{{ ' active' if item.key == current_nav }}"
                        href="{{ item.href }}"
+                       title="{{ item.label }}"
                        {{ 'aria-current="page"' | safe if item.key == current_nav }}>
                         {{ sidebar_icon(item.icon) }}
                         <span>{{ item.label }}</span>
@@ -74,5 +80,42 @@
 
     {% block print %}{% endblock %}
     {% block scripts %}{% endblock %}
+
+    <script>
+    (function () {
+        var toggle = document.getElementById('sidebar-toggle');
+        var sidebar = document.getElementById('sidebar');
+        var backdrop = document.getElementById('sidebar-backdrop');
+        function closeDrawer() {
+            document.body.classList.remove('sidebar-open');
+            toggle.setAttribute('aria-expanded', 'false');
+        }
+
+        function openDrawer() {
+            document.body.classList.add('sidebar-open');
+            toggle.setAttribute('aria-expanded', 'true');
+        }
+
+        toggle.addEventListener('click', function () {
+            if (document.body.classList.contains('sidebar-open')) {
+                closeDrawer();
+            } else {
+                openDrawer();
+            }
+        });
+
+        backdrop.addEventListener('click', closeDrawer);
+
+        sidebar.querySelectorAll('a').forEach(function (link) {
+            link.addEventListener('click', closeDrawer);
+        });
+
+        document.addEventListener('keydown', function (event) {
+            if (event.key === 'Escape') {
+                closeDrawer();
+            }
+        });
+    })();
+    </script>
 </body>
 </html>
