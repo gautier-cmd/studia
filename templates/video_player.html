@@ -5,7 +5,7 @@
 {% set filename = item['relative_path'].rsplit('/', 1)[-1] %}
 <a class="file-row {{ 'current' if item['id'] == current_media_id else '' }}"
    href="{{ url_for('watch_video', media_id=item['id']) }}">
-    <span class="file-title">{{ clean_file_title(filename) }}</span>
+    <span class="file-title" title="{{ filename }}">{{ clean_file_title(filename) }}</span>
     <span class="file-meta">{{ format_duration(item['duration_seconds']) }}</span>
 </a>
 {% endmacro %}
@@ -52,7 +52,7 @@
             <details class="playlist-chapter" data-chapter="{{ parent_path }}" {% if chapter_has_current %}data-current open{% endif %}>
                 <summary>
                     <span class="chevron">›</span>
-                    <span class="chapter-title">{{ parent_path if parent_path else 'Racine' }}</span>
+                    <span class="chapter-title" title="{{ parent_path if parent_path else 'Racine' }}">{{ parent_path if parent_path else 'Racine' }}</span>
                 </summary>
                 <div class="playlist-media">
                     {% for item in media_list %}

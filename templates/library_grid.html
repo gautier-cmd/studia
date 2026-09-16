@@ -61,9 +61,9 @@
             </div>
             <div class="card-body">
                 <span class="badge badge-{{ item['item_type'] }}">{{ badge_label(item['item_type']) }}</span>
-                <h2 class="card-title">{{ item['title'] }}</h2>
+                <h2 class="card-title" title="{{ item['title'] }}">{{ item['title'] }}</h2>
                 {% if item['author'] %}
-                <div class="card-author">{{ item['author'] }}</div>
+                <div class="card-author" title="{{ item['author'] }}">{{ item['author'] }}</div>
                 {% endif %}
                 {% if item['meta_line'] %}
                 <div class="meta">{{ item['meta_line'] }}</div>
