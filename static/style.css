@@ -815,6 +815,7 @@ body.page-player .card {
 
 .library-filters {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-8);
 }
 
@@ -868,12 +869,32 @@ body.page-player .card {
     text-align: center;
 }
 
-/* Grille de la bibliothèque */
-
+/* Grille de la bibliothèque — nombre de colonnes calé sur les seuils
+   dérivés en tranche 1 (tokens.css : 720/1120/1440), plutôt qu'un
+   auto-fill qui ignorait ces seuils et sautait de 2 à 4 colonnes sans
+   jamais passer par 3 sur le palier desktop intermédiaire. */
 .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: 1fr;
     gap: var(--space-20);
+}
+
+@media (min-width: 720px) {
+    .grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (min-width: 1120px) {
+    .grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+@media (min-width: 1440px) {
+    .grid {
+        grid-template-columns: repeat(4, 1fr);
+    }
 }
 
 .cover {
