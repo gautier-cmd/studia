@@ -893,7 +893,8 @@ incompatibles avec le modèle. Le CSS des templates existants est
 réutilisable comme point de départ.
 
 Lecteurs prévus, dans cet ordre : vidéo (fait), sauvegarde de la
-position de lecture, audio/M4B avec chapitres, PDF (PDF.js), EPUB. La
+position de lecture (fait, voir ci-dessous), audio/M4B avec
+chapitres, PDF (PDF.js), EPUB. La
 progression vient juste après la vidéo parce qu'elle ne se pose
 qu'une fois et sert ensuite à tous les lecteurs suivants, plutôt que
 d'être refaite à chacun. Le M4B reste avant le PDF : il partage la
@@ -903,6 +904,85 @@ le nombre de pages — pas encore lu au scan (voir backlog).
 
 Progression selon le type : secondes pour vidéo et audio, page pour PDF,
 position pour EPUB.
+
+### Sauvegarde de la position de lecture (vidéo, fait)
+
+Écriture seule pour l'instant : aucun affichage nulle part (cartes,
+« Continuer », états de leçon, bouton « Reprendre ») — ça viendra dans
+une tranche séparée, une fois cette base posée. La table `progress`
+existait déjà au schéma (v4, jamais utilisée jusqu'ici) : rien à
+migrer, uniquement des requêtes et une route.
+
+- **Écriture**, plusieurs déclencheurs combinés (`video_player.html`) :
+  toutes les 30 secondes pendant la lecture (filet contre un plantage
+  seulement — la pause, la fermeture et la fin couvrent déjà les cas
+  réels, ce qui explique l'intervalle large plutôt que quelques
+  secondes) ; à la pause ; à la fin de la vidéo (`ended`) ; à la
+  fermeture ou au changement d'onglet, sur `visibilitychange` **et**
+  `pagehide` combinés (selon le navigateur, l'un des deux peut ne pas
+  se déclencher), via `navigator.sendBeacon` comme pour la note.
+- **Seuil du « terminé »** (`is_video_completed`) : position à moins
+  de 5 % de la durée totale de la fin, plafonnés à 15 secondes — le
+  plafond évite qu'une formation de plusieurs heures exige d'atteindre
+  sa toute dernière seconde (un générique de 10 minutes ne devrait pas
+  empêcher indéfiniment le « terminé »), les 5 % s'appliquent tels
+  quels sous ce plafond pour une vidéo courte.
+- **Coche définitive.** Une fois vraie, `completed` ne redescend
+  jamais automatiquement — revenir en arrière dans une vidéo déjà
+  terminée continue de mettre à jour la position, mais ne retire pas
+  la coche. « Terminé » veut dire « déjà vu en entier au moins une
+  fois », pas « actuellement positionné à la fin ». Porté par un
+  `MAX()` dans la requête d'upsert, pas par du code applicatif. Seule
+  une remise à zéro explicite (backlog, tranche d'affichage) peut la
+  défaire.
+- **Agrégation média -> item** (`aggregate_item_progress`) :
+  « jamais ouvert » si aucun média principal n'a de ligne de
+  progression, « terminé » si tous l'ont avec `completed`, « en
+  cours » sinon. Un item sans aucun média principal (item classé
+  « document », ou un livre dont le PDF n'est qu'une ressource) reçoit
+  explicitement « jamais ouvert » — jamais « terminé » par vacuité
+  (une liste vide validerait trivialement `all()`).
+- **Reprise exacte.** À l'ouverture du lecteur, la position enregistrée
+  est reprise telle quelle, sans recul artificiel — sauf si la vidéo
+  est déjà `completed` : dans ce cas elle repart du début, pas de sa
+  position de fin enregistrée. Rouvrir une vidéo déjà terminée, c'est
+  vouloir la revoir. Un repère explicite (`?t=`, cliqué depuis une
+  note) l'emporte toujours sur cette reprise automatique, y compris
+  sur une vidéo terminée — c'est un geste volontaire, pas la reprise.
+- **Garde-fou sur l'enchaînement automatique.** Corrige un effet de
+  bord découvert à l'usage réel : reprendre une vidéo déjà terminée la
+  positionnait autrefois à sa propre fin, ce qui déclenchait `ended`
+  quasi instantanément et enchaînait en cascade sur toutes les vidéos
+  terminées suivantes jusqu'au vrai point de reprise. La reprise au
+  début d'une vidéo terminée (règle précédente) supprime la cause de
+  cette cascade précise ; le garde-fou `player.played` protège en plus,
+  indépendamment, contre tout autre `ended` déclenché sans lecture
+  réelle — les deux corrections viennent du même passage, pas l'une
+  après l'autre. L'écouteur `ended` qui enchaîne sur la vidéo suivante
+  vérifie désormais `player.played` (mesure native de
+  ce qui a réellement défilé, distincte de `currentTime`) : en dessous
+  d'un plancher de 0,25 seconde de lecture réelle, ce n'est pas une
+  vraie fin, pas d'enchaînement. Le plancher porte sur la quantité
+  réellement jouée, pas sur un délai depuis le chargement de la page —
+  ça tient donc aussi bien sur une vidéo très courte.
+- **Bouton « Regarder ».** Vise désormais la première vidéo non
+  terminée dans l'ordre du programme, ou la première vidéo de l'item
+  si tout est déjà terminé — plus systématiquement la première vidéo
+  quel que soit l'état d'avancement. Le libellé reste « Regarder » :
+  le passage à « Reprendre » appartient à la tranche d'affichage.
+
+Non testable en pytest : le garde-fou `player.played` dépend d'un
+vrai minutage de lecture dans un navigateur, absent de cette suite de
+tests. Le test correspondant
+(`test_enchainement_automatique_garde_fou_present`) vérifie seulement
+que le garde-fou est bien présent dans le gabarit rendu — une
+protection contre une régression du code, pas une simulation du
+comportement réel. Vérifié à la main sur la bibliothèque de test
+(Motion Design) : reprise directe à la bonne vidéo, pas de cascade,
+enchaînement normal préservé sur une vidéo qui se termine réellement,
+vidéo terminée qui repart du début.
+
+`pytest tests/` (106 tests) au vert.
 
 ## Méthode — backlog
 
