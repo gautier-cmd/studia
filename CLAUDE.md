@@ -1015,6 +1015,13 @@ backlog plus difficile à corriger sans le signaler d'abord.
   lourde pour le bénéfice. Les ressources n'ont pas besoin de
   mémoriser une position de lecture (fiches, exemples, compléments) ;
   les livres oui, par page.
+- Remise à zéro de la progression d'un item. Entrée dans le menu ⋮ du
+  hero, visible seulement si l'item a au moins une ligne de
+  progression, avec confirmation par la modale existante. Efface
+  uniquement les lignes progress des médias de l'item — jamais les
+  notes, les métadonnées ni les fichiers. Appartient à la tranche
+  d'affichage de la progression, puisqu'elle n'a de sens qu'une fois
+  celle-ci visible.
 
 ## Méthode de travail
 
