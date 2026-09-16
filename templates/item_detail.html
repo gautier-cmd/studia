@@ -31,13 +31,18 @@
 
 {% macro media_row(media) %}
 {% set filename = media['relative_path'].rsplit('/', 1)[-1] %}
+{% set state = progress_states.get(media['id'], 'not_started') %}
 <div class="file-row">
     {% if media['media_type'] == 'video' %}
     <a class="file-title" href="{{ url_for('watch_video', media_id=media['id']) }}" title="{{ filename }}">{{ clean_file_title(filename) }}</a>
     {% else %}
     <span class="file-title" title="{{ filename }}">{{ clean_file_title(filename) }}</span>
     {% endif %}
-    <span class="file-meta">{{ format_duration(media['duration_seconds']) }}</span>
+    <span class="file-trailing">
+        {% if state == 'completed' %}<span class="file-state file-state-done">✓ Terminé</span>
+        {% elif state == 'in_progress' %}<span class="file-state file-state-progress">En cours</span>{% endif %}
+        <span class="file-meta">{{ format_duration(media['duration_seconds']) }}</span>
+    </span>
 </div>
 {% endmacro %}
 
@@ -71,7 +76,9 @@
 
             <div class="hero-actions">
                 {% if first_video_id %}
-                <a class="btn-primary" href="{{ url_for('watch_video', media_id=first_video_id) }}">▶ Regarder</a>
+                <a class="btn-primary" href="{{ url_for('watch_video', media_id=first_video_id) }}">
+                    {% if progress_status == 'in_progress' %}▶ Reprendre{% else %}▶ Regarder{% endif %}
+                </a>
                 {% if resources %}
                 <button type="button" class="btn-secondary" data-tab-target="ressources">Voir les ressources</button>
                 {% endif %}

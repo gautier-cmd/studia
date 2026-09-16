@@ -367,7 +367,10 @@ def test_bouton_regarder_pointe_vers_la_premiere_video_non_terminee(client) -> N
     response = client.get(f"/item/{item_id}")
     data = response.data.decode()
 
-    assert f'href="/watch/{second_id}">▶ Regarder' in data
+    # class avant href dans le gabarit (hero-actions) : ancre le CTA
+    # précisément, à distinguer des liens du Programme qui listent
+    # aussi chaque vidéo (dont la première, terminée).
+    assert f'class="btn-primary" href="/watch/{second_id}"' in data
 
 
 def test_bouton_regarder_repart_de_la_premiere_video_si_tout_est_termine(
@@ -386,7 +389,7 @@ def test_bouton_regarder_repart_de_la_premiere_video_si_tout_est_termine(
     response = client.get(f"/item/{item_id}")
     data = response.data.decode()
 
-    assert f'href="/watch/{first_id}">▶ Regarder' in data
+    assert f'class="btn-primary" href="/watch/{first_id}"' in data
 
 
 def test_enchainement_automatique_garde_fou_present(client) -> None:
@@ -507,3 +510,95 @@ def test_carte_terminee_montre_100_pourcent_sans_barre(client) -> None:
     assert "100 %" in data
     assert 'class="card-progress"' not in data
 
+
+# --- Libellé du bouton hero ----------------------------------------------
+
+
+def test_bouton_hero_regarder_si_rien_commence(client) -> None:
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert "▶ Regarder" in data
+    assert "▶ Reprendre" not in data
+
+
+def test_bouton_hero_reprendre_si_en_cours(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert "▶ Reprendre" in data
+
+
+def test_bouton_hero_regarder_si_tout_termine(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+    set_duration(client, first_id, 100.0)
+    set_duration(client, second_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+    client.post(f"/media/{second_id}/progress", data={"position_seconds": "99"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    # Tout terminé : pas de "Reprendre" (rien à reprendre), le même
+    # "Regarder" que pour une formation jamais commencée - revoir
+    # depuis le début est la même action que la première fois, et
+    # "Revoir" n'existe pas dans le vocabulaire déjà établi (Regarder,
+    # Lire, Écouter, Reprendre).
+    assert "▶ Regarder" in data
+    assert "▶ Reprendre" not in data
+
+
+# --- États de leçon (programme et playlist) ------------------------------
+
+
+def test_etats_de_lecon_dans_le_programme(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+    client.post(f"/media/{second_id}/progress", data={"position_seconds": "10"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert '<span class="file-state file-state-done">✓ Terminé</span>' in data
+    assert '<span class="file-state file-state-progress">En cours</span>' in data
+
+
+def test_lecon_non_commencee_pas_de_badge_dans_le_programme(client) -> None:
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert "file-state" not in data
+
+
+def test_etats_de_lecon_dans_la_playlist(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+
+    response = client.get(f"/watch/{second_id}")
+    data = response.data.decode()
+
+    assert '<span class="file-state file-state-done">✓ Terminé</span>' in data

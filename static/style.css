@@ -1154,6 +1154,37 @@ body.page-player .card {
     margin-left: var(--space-16);
 }
 
+/* Regroupe l'état de leçon et la durée à droite du titre, pour que les
+   deux bougent ensemble comme un seul bloc plutôt que d'écarteler
+   .file-row (justify-content: space-between) sur trois enfants. */
+.file-trailing {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    flex-shrink: 0;
+}
+
+.file-trailing .file-meta {
+    margin-left: 0;
+}
+
+/* États de leçon (non commencée : rien, état neutre par défaut - voir
+   le gabarit ; en cours ; terminée). Texte, pas seulement une couleur
+   (accessibilité) ; aucune couleur nouvelle - text-tertiary et accent
+   existent déjà dans la palette. */
+.file-state {
+    font-size: var(--font-size-annotation);
+    white-space: nowrap;
+}
+
+.file-state-progress {
+    color: var(--color-text-tertiary);
+}
+
+.file-state-done {
+    color: var(--color-accent);
+}
+
 /* Présentation extraite */
 
 .presentation-top {

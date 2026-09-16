@@ -3,10 +3,15 @@
 
 {% macro playlist_row(item) %}
 {% set filename = item['relative_path'].rsplit('/', 1)[-1] %}
+{% set state = progress_states.get(item['id'], 'not_started') %}
 <a class="file-row {{ 'current' if item['id'] == current_media_id else '' }}"
    href="{{ url_for('watch_video', media_id=item['id']) }}">
     <span class="file-title" title="{{ filename }}">{{ clean_file_title(filename) }}</span>
-    <span class="file-meta">{{ format_duration(item['duration_seconds']) }}</span>
+    <span class="file-trailing">
+        {% if state == 'completed' %}<span class="file-state file-state-done">✓ Terminé</span>
+        {% elif state == 'in_progress' %}<span class="file-state file-state-progress">En cours</span>{% endif %}
+        <span class="file-meta">{{ format_duration(item['duration_seconds']) }}</span>
+    </span>
 </a>
 {% endmacro %}
 

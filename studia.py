@@ -332,21 +332,6 @@ def resolve_watch_target_video_id(
     return video_ids[0]
 
 
-def fetch_completed_video_ids(conn, item_id: int) -> set[int]:
-    rows = conn.execute(
-        """
-        SELECT media.id
-        FROM media
-        JOIN progress
-            ON progress.media_id = media.id AND progress.user_id = ?
-        WHERE media.item_id = ? AND progress.completed = 1
-        """,
-        (LOCAL_USER_ID, item_id),
-    ).fetchall()
-
-    return {row["id"] for row in rows}
-
-
 def aggregate_item_progress(media_progress: list[tuple[bool, bool]]) -> str:
     """Règle d'agrégation média -> item : 'not_started', 'in_progress'
     ou 'completed', à partir d'une ligne (a_une_progression, terminé)
@@ -1148,7 +1133,7 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                 (item_id,),
             ).fetchall()
 
-            completed_video_ids = fetch_completed_video_ids(conn, item_id)
+            progress_states = fetch_video_progress_states(conn, item_id)
         finally:
             conn.close()
 
@@ -1161,7 +1146,18 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         chapters = build_programme_chapters(media_rows)
 
         video_ids = [m["id"] for m in media_rows if m["media_type"] == "video"]
+        completed_video_ids = {
+            media_id
+            for media_id, state in progress_states.items()
+            if state == "completed"
+        }
         first_video_id = resolve_watch_target_video_id(video_ids, completed_video_ids)
+        progress_status = aggregate_item_progress(
+            [
+                (video_id in progress_states, video_id in completed_video_ids)
+                for video_id in video_ids
+            ]
+        )
 
         total_duration = sum(m["duration_seconds"] or 0 for m in media_rows)
 
@@ -1231,6 +1227,8 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             hero=hero,
             hero_meta=hero_meta,
             first_video_id=first_video_id,
+            progress_status=progress_status,
+            progress_states=progress_states,
             total_duration=total_duration,
             note_text=note["text"] if note else "",
             note_updated_at=note["updated_at"] if note else None,
@@ -1412,6 +1410,7 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
 
             playlist = fetch_video_playlist(conn, media["item_id"])
             stored_progress = fetch_media_progress(conn, media_id)
+            progress_states = fetch_video_progress_states(conn, media["item_id"])
         finally:
             conn.close()
 
@@ -1449,6 +1448,7 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             prev_id=prev_id,
             next_id=next_id,
             seek_seconds=seek_seconds,
+            progress_states=progress_states,
             note_text=note["text"] if note else "",
             note_updated_at=note["updated_at"] if note else None,
             player_context={
