@@ -150,6 +150,77 @@
     })();
 </script>
 
+<script>
+    (function () {
+        var player = document.getElementById('player');
+        if (!player) {
+            return;
+        }
+
+        var mediaId = {{ media['id'] | tojson }};
+        var saveTimer = null;
+
+        function sendPosition(useBeacon) {
+            var position = player.currentTime;
+            if (!position) {
+                return;
+            }
+
+            var body = new URLSearchParams({position_seconds: position});
+
+            if (useBeacon && navigator.sendBeacon) {
+                navigator.sendBeacon(
+                    '/media/' + mediaId + '/progress',
+                    new Blob([body.toString()], {type: 'application/x-www-form-urlencoded'})
+                );
+                return;
+            }
+
+            fetch('/media/' + mediaId + '/progress', {method: 'POST', body: body});
+        }
+
+        // Filet contre un plantage seulement : la pause, la fermeture
+        // d'onglet et la fin de vidéo (ci-dessous) couvrent déjà les
+        // cas réels d'arrêt. 30 secondes plutôt qu'un intervalle plus
+        // court - une formation de plusieurs dizaines d'heures n'a pas
+        // besoin d'écrire beaucoup plus souvent que ça pour limiter la
+        // perte à un intervalle raisonnable en cas de plantage.
+        player.addEventListener('play', function () {
+            clearInterval(saveTimer);
+            saveTimer = setInterval(function () { sendPosition(false); }, 30000);
+        });
+
+        player.addEventListener('pause', function () {
+            clearInterval(saveTimer);
+            sendPosition(false);
+        });
+
+        player.addEventListener('ended', function () {
+            clearInterval(saveTimer);
+            // sendBeacon plutôt que fetch : la fin de vidéo déclenche
+            // souvent un enchaînement automatique immédiat (script
+            // plus bas), qui changerait de page avant qu'un fetch
+            // classique ait eu le temps d'aboutir.
+            sendPosition(true);
+        });
+
+        // Deux évènements différents pour le même besoin (fermeture
+        // d'onglet ou de fenêtre) : selon le navigateur, l'un des deux
+        // peut ne pas se déclencher - comme pour la note
+        // (_note_widget.html), sendBeacon est pensé pour aboutir même
+        // pendant un déchargement de page.
+        document.addEventListener('visibilitychange', function () {
+            if (document.visibilityState === 'hidden') {
+                sendPosition(true);
+            }
+        });
+
+        window.addEventListener('pagehide', function () {
+            sendPosition(true);
+        });
+    })();
+</script>
+
 {% if seek_seconds %}
 <script>
     (function () {

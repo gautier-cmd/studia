@@ -338,9 +338,10 @@ def test_lecteur_video_derniere_video_sans_suivant(client) -> None:
 
     assert response.status_code == 200
     assert '<span class="disabled">Suivant →</span>' in data
-    # Pas de video suivante : pas de script d'enchainement automatique
-    # sur la fin de la vidéo (le bloc-notes a son propre JS, sans rapport).
-    assert "addEventListener('ended'" not in data
+    # Pas de video suivante : pas de redirection automatique a la fin
+    # de la vidéo. L'écriture de la progression (voir test_progress.py),
+    # elle, garde son propre écouteur 'ended' quoi qu'il arrive.
+    assert "window.location.href" not in data
 
 
 # --------------------------------------------------------------------

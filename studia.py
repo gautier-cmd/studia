@@ -63,6 +63,21 @@ BOOK_SOURCE_LABELS = {
     "manual": "Saisie manuelle",
 }
 
+# Unique utilisateur créé par le scanner (library_index.ensure_schema,
+# ligne "local") : pas de compte en V1, voir "Refonte visuelle" dans
+# CLAUDE.md — toute écriture de progression utilise cet id fixe.
+LOCAL_USER_ID = 1
+
+# Marge en dessous de la durée totale à partir de laquelle une lecture
+# est considérée terminée : 5 % de la durée, plafonnés à 15 secondes.
+# Le plafond évite qu'une vidéo de plusieurs heures exige d'atteindre
+# la toute dernière seconde (un générique de fin de 10 minutes sur une
+# formation de 3h ne devrait pas empêcher indéfiniment le "terminé") ;
+# les 5 % s'appliquent tels quels sous ce plafond, pour une vidéo
+# courte.
+PROGRESS_COMPLETION_MARGIN_RATIO = 0.05
+PROGRESS_COMPLETION_MARGIN_CAP_SECONDS = 15.0
+
 # Mot au pluriel selon le media_type réellement présent dans l'item
 # (pas selon son item_type) — un seul type par item depuis la
 # suppression de book_audio, voir _media_label ci-dessous.
@@ -209,6 +224,7 @@ def fetch_video_media(conn, media_id: int):
             media.item_id,
             media.relative_path,
             media.extension,
+            media.duration_seconds,
             items.title AS item_title,
             items.library_path
         FROM media
@@ -217,6 +233,108 @@ def fetch_video_media(conn, media_id: int):
         """,
         (media_id,),
     ).fetchone()
+
+
+def is_video_completed(position_seconds: float, duration_seconds: float | None) -> bool:
+    """Règle du "terminé" : dans les 5% de la fin, plafonnés à 15
+    secondes (voir PROGRESS_COMPLETION_MARGIN_*). Sans durée connue
+    (sonde ffprobe en échec), jamais "terminé" : rien à comparer."""
+
+    if not duration_seconds or duration_seconds <= 0:
+        return False
+
+    margin = min(
+        duration_seconds * PROGRESS_COMPLETION_MARGIN_RATIO,
+        PROGRESS_COMPLETION_MARGIN_CAP_SECONDS,
+    )
+
+    return position_seconds >= duration_seconds - margin
+
+
+def save_video_progress(
+    conn, media_id: int, position_seconds: float, duration_seconds: float | None
+) -> None:
+    """Enregistre la position et calcule "terminé" à partir de la durée
+    connue côté serveur (jamais celle envoyée par le client).
+
+    "completed" ne redescend jamais tout seul : revenir en arrière
+    dans une vidéo déjà marquée terminée continue de mettre à jour
+    position_seconds (le point de reprise reste exact), mais ne retire
+    pas la coche — "terminé" signifie "déjà vu en entier au moins une
+    fois", pas "actuellement positionné à la fin". MAX(...) dans la
+    requête porte cette règle : une remise à zéro explicite (à venir,
+    hors de cette tranche) est la seule façon de la défaire.
+    """
+
+    position_seconds = max(0.0, position_seconds)
+    completed = 1 if is_video_completed(position_seconds, duration_seconds) else 0
+
+    conn.execute(
+        """
+        INSERT INTO progress (user_id, media_id, position_seconds, completed, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, media_id) DO UPDATE SET
+            position_seconds = excluded.position_seconds,
+            completed = MAX(progress.completed, excluded.completed),
+            updated_at = excluded.updated_at
+        """,
+        (LOCAL_USER_ID, media_id, position_seconds, completed, now_iso()),
+    )
+    conn.commit()
+
+
+def fetch_media_position(conn, media_id: int) -> float | None:
+    row = conn.execute(
+        "SELECT position_seconds FROM progress WHERE media_id = ? AND user_id = ?",
+        (media_id, LOCAL_USER_ID),
+    ).fetchone()
+
+    return row["position_seconds"] if row and row["position_seconds"] is not None else None
+
+
+def aggregate_item_progress(media_progress: list[tuple[bool, bool]]) -> str:
+    """Règle d'agrégation média -> item : 'not_started', 'in_progress'
+    ou 'completed', à partir d'une ligne (a_une_progression, terminé)
+    par média principal de l'item (ceux de la table media - jamais les
+    resources, voir la clé étrangère de progress).
+
+    Un item sans aucun média principal (ex. un item classé 'document',
+    ou un livre dont le PDF n'est qu'une ressource) reçoit une liste
+    vide : il ne doit jamais ressortir 'completed' par vacuité (all()
+    sur une liste vide vaudrait True) - le cas est donc écarté
+    explicitement avant l'agrégation réelle, avant même de regarder
+    'in_progress'.
+    """
+
+    if not media_progress:
+        return "not_started"
+
+    if all(completed for _has_progress, completed in media_progress):
+        return "completed"
+
+    if any(has_progress for has_progress, _completed in media_progress):
+        return "in_progress"
+
+    return "not_started"
+
+
+def fetch_item_progress_status(conn, item_id: int) -> str:
+    rows = conn.execute(
+        """
+        SELECT
+            progress.completed IS NOT NULL AS has_progress,
+            COALESCE(progress.completed, 0) AS completed
+        FROM media
+        LEFT JOIN progress
+            ON progress.media_id = media.id AND progress.user_id = ?
+        WHERE media.item_id = ?
+        """,
+        (LOCAL_USER_ID, item_id),
+    ).fetchall()
+
+    return aggregate_item_progress(
+        [(bool(row["has_progress"]), bool(row["completed"])) for row in rows]
+    )
 
 
 def fetch_video_playlist(conn, item_id: int):
@@ -1178,6 +1296,7 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                 abort(404)
 
             playlist = fetch_video_playlist(conn, media["item_id"])
+            stored_position = fetch_media_position(conn, media_id)
         finally:
             conn.close()
 
@@ -1199,6 +1318,14 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         filename = media["relative_path"].rsplit("/", 1)[-1]
         video_title = clean_file_title(filename)
 
+        # Un repère explicite (?t=, cliqué depuis la note) l'emporte
+        # toujours sur la reprise automatique - une personne qui clique
+        # un repère précis veut aller là, pas reprendre où elle en
+        # était avant.
+        seek_seconds = request.args.get("t", type=int)
+        if seek_seconds is None and stored_position is not None:
+            seek_seconds = int(stored_position)
+
         return render_template(
             "video_player.html",
             media=media,
@@ -1206,7 +1333,7 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             current_media_id=media_id,
             prev_id=prev_id,
             next_id=next_id,
-            seek_seconds=request.args.get("t", type=int),
+            seek_seconds=seek_seconds,
             note_text=note["text"] if note else "",
             note_updated_at=note["updated_at"] if note else None,
             player_context={
@@ -1241,6 +1368,27 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         mimetype, _ = mimetypes.guess_type(file_path.name)
 
         return send_file(file_path, mimetype=mimetype)
+
+    @app.route("/media/<int:media_id>/progress", methods=["POST"])
+    def save_progress(media_id: int):
+        position_seconds = request.form.get("position_seconds", type=float)
+
+        if position_seconds is None:
+            abort(400)
+
+        conn = connect_database(app.config["DB_PATH"])
+
+        try:
+            media = fetch_video_media(conn, media_id)
+
+            if media is None:
+                abort(404)
+
+            save_video_progress(conn, media_id, position_seconds, media["duration_seconds"])
+        finally:
+            conn.close()
+
+        return ("", 204)
 
     @app.errorhandler(404)
     def not_found(error):
