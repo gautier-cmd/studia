@@ -332,7 +332,7 @@ migration.
    ci-dessous.
 4. Écran Bibliothèque : recherche, filtres, grille, cartes — fait,
    voir ci-dessous.
-5. Responsive.
+5. Responsive — fait, voir ci-dessous.
 6. Fiche de contenu — fait, voir ci-dessous.
 7. Lecteur vidéo et programme — fait, voir ci-dessous.
 8. Notes — fait, voir ci-dessous.
@@ -509,6 +509,52 @@ déjà peuplée (voir backlog pour le détail des deux).
 
 Vérifié à l'œil sur les 4 items de la bibliothèque de test, `pytest
 tests/` (73 tests) au vert.
+
+### Tranche 5 — responsive (fait)
+
+Adaptation de l'ensemble de l'application à quatre tailles, en
+réutilisant les seuils déjà dérivés en tranche 1 (720/1120/1440,
+tokens.css) plutôt que d'en réinventer — écran par écran, un commit
+par écran :
+
+- **Sidebar**, traitée en premier car la plus structurante. Quatre
+  états : desktop large (≥1440, inchangé, 240px) ; desktop
+  intermédiaire (1120–1439, réduite à 200px, même contenu) ; tablette
+  (720–1119, icônes seules à 72px, pictogramme `logo-picto.png` — déjà
+  fourni, jamais utilisé jusque-là — à la place du mot-symbole,
+  libellés en infobulle) ; smartphone (<720, tiroir fermé par défaut,
+  ouvert par un bouton hamburger).
+- **Grille.** Colonnes explicites par palier (1/2/3/4) à la place d'un
+  `auto-fill` qui n'utilisait pas du tout les seuils officiels et
+  sautait de 2 à 4 colonnes sans jamais passer par 3 sur le palier
+  intermédiaire. Chips de filtre qui débordaient à 375px (pas de
+  `flex-wrap`) corrigées.
+- **Fiche.** L'unique seuil existant (700px, non officiel) traitait
+  tablette et smartphone pareil ; séparé en deux — tablette garde
+  l'image à côté du texte (réduite), smartphone l'empile au-dessus.
+- **Lecteur vidéo.** Seuil existant (900px, non officiel) réaligné sur
+  719px. Tablette garde vidéo et programme côte à côte (chapitres
+  toujours repliables comme sur desktop), programme rétréci à 240px
+  plutôt qu'empilé.
+- **Notes et modales** : déjà responsives sans y toucher — la barre
+  d'outils avait son `flex-wrap` depuis la tranche 8, et `dialog.modal`
+  sa largeur/hauteur bornées au viewport depuis la correction du
+  centrage.
+
+Deux corrections après un premier retour à 375px : le bouton hamburger
+était en position fixe, donc gardé plaqué à l'écran pendant le
+défilement — il finissait par recouvrir la couverture d'une fiche ou
+le titre d'une vidéo. Déplacé dans une barre en flux normal (collante,
+pas fixe), qui occupe sa propre place plutôt que de se superposer.
+Les trois contrôles du hero (CTA principal, CTA secondaire, menu ⋮) ne
+tenaient pas sur une ligne à cette largeur, forçant certains libellés
+à se couper en deux lignes ; le CTA principal et le menu restent
+ensemble sur la première ligne, le CTA secondaire passe seul en
+pleine largeur en dessous.
+
+Vérifié à chaque étape que le rendu desktop large (≥1440) reste
+identique. `pytest tests/` (74 tests) au vert tout du long — CSS et
+gabarits uniquement, aucun test à écrire pour cette tranche.
 
 ### Tranche 6 — fiche de contenu (fait)
 
@@ -691,6 +737,78 @@ comportements nouveaux, non couverts par la suite existante.
 
 Vérifié à l'œil, `pytest tests/` (74 tests) au vert.
 
+### Accessibilité et finitions (fait)
+
+Dernière tranche de la refonte visuelle, hors de la liste numérotée
+ci-dessus (comme « Traçabilité des métadonnées » et « Priorité des
+couvertures ») : accessibilité clavier et finitions, selon le point 34
+de la revue.
+
+- **Contraste**, mesuré (formule WCAG), pas jugé à l'œil. Toute la
+  palette officielle passe le seuil AA (4,5:1) sur les fonds où elle
+  est réellement utilisée : texte secondaire 9,3–10,4:1, texte
+  tertiaire 5,4–6,0:1, accent en texte 5,97–6,69:1, les trois paires
+  de badges 5,52–6,40:1 — rien à changer dans la charte. Deux réglages
+  qui n'en faisaient pas partie ont été corrigés : le compteur des
+  chips de filtre perdait du contraste avec une opacité réduite
+  (3,51:1 sur une chip active, sous le seuil) ; les champs de
+  recherche et de note n'avaient pas de couleur de placeholder
+  explicite (valeur du navigateur, non garantie) — fixée à
+  `text-tertiary`.
+- **Focus clavier**, rendu visible partout via un contour générique
+  (le même accent que la sidebar) sur tous les éléments interactifs
+  natifs. Deux endroits masquaient ce contour sans le vouloir : les
+  cartes de la grille et les chapitres du Programme coupent tout
+  dépassement pour leurs coins arrondis, un contour classique y aurait
+  été invisible — contour rentrant à la place ; le menu ⋮ supprimait
+  carrément son contour au clavier, ne laissant qu'un fond à peine
+  visible — corrigé.
+- **Modales.** Le piège de focus natif de `<dialog>` et la
+  restauration du focus à la fermeture ne se sont pas montrés fiables
+  à l'usage (vérifié au clavier réel, pas supposé) : refaits à la
+  main — Tab/Shift+Tab bouclent dans la modale, Échap est intercepté
+  directement, et les trois façons de fermer (croix, clic dehors,
+  Échap) rendent le focus au bouton ⋮ d'origine.
+- **Tiroir de la sidebar.** Une translation CSS ne retire rien de
+  l'ordre de tabulation : fermé, ses liens restaient atteignables au
+  Tab tout en étant invisibles ; ouvert, le Tab pouvait continuer dans
+  le contenu masqué par le fond d'estompage. Rendu inerte (`inert`
+  natif) selon l'état, uniquement au palier smartphone. Correction
+  après premier retour : rendre tout `.app-main` inerte à l'ouverture
+  emportait le bouton hamburger lui-même, qui ne refermait plus le
+  tiroir — le contenu de page est maintenant dans son propre conteneur
+  (`#app-content`), seul rendu inerte ; le bouton reste toujours
+  cliquable.
+- **Infobulles** ajoutées partout où un texte est coupé par une
+  ellipse (carte, chapitre, playlist du lecteur — ce dernier avait été
+  oublié à la tranche 7).
+- **Boutons à icône seule** (hamburger, menu ⋮, croix de fermeture,
+  croix de suppression d'un repère) : déjà tous étiquetés depuis les
+  tranches précédentes, vérifié plutôt que refait.
+- **Menus ⋮ : pas de navigation aux flèches.** Le rôle ARIA « menu »
+  utilisé pour ces menus implique normalement une navigation complète
+  aux flèches ; pour 1 à 3 actions, l'effort de l'implémenter aurait
+  été disproportionné par rapport à Tab + Entrée, qui fonctionne déjà.
+  Tranché de ce côté-ci (pas une demande de Gautier), signalé dans le
+  compte-rendu de la tranche, validé sans changement.
+- **Cas extrêmes** (titre et auteur très longs, 124 chapitres, durée
+  de plusieurs jours, 40 ressources, aucune métadonnée, aucune
+  couverture) construits dans une bibliothèque et une base jetables,
+  jamais la bibliothèque réelle — deux tests pytest permanents plutôt
+  qu'une vérification à usage unique.
+
+Limite de vérification levée : le franchissement des seuils par un
+vrai redimensionnement de fenêtre (tiroir ouvert qui doit se refermer
+tout seul en élargissant au-delà de 720px, page qui doit rester
+utilisable en rétrécissant sans toucher au tiroir) n'avait pas pu être
+observé dans l'environnement de développement — une iframe de test
+redimensionnée ne déclenche ni `resize` ni le `change` de `matchMedia`
+sur son propre contenu. Vérifié depuis par Gautier dans une vraie
+fenêtre : les deux cas passent.
+
+Vérifié à l'œil sur les quatre écrans et à la souris comme au clavier,
+`pytest tests/` (76 tests) au vert.
+
 ### Traçabilité des métadonnées — partiellement implémentée
 
 Décidé avec Gautier au moment de la tranche 6 : **aucun champ de
@@ -774,8 +892,14 @@ occurrences de « lesson » et l'état global current_course sont
 incompatibles avec le modèle. Le CSS des templates existants est
 réutilisable comme point de départ.
 
-Lecteurs prévus, dans cet ordre : vidéo (fait), audio/M4B avec chapitres,
-PDF (PDF.js). EPUB plus tard.
+Lecteurs prévus, dans cet ordre : vidéo (fait), sauvegarde de la
+position de lecture, audio/M4B avec chapitres, PDF (PDF.js), EPUB. La
+progression vient juste après la vidéo parce qu'elle ne se pose
+qu'une fois et sert ensuite à tous les lecteurs suivants, plutôt que
+d'être refaite à chacun. Le M4B reste avant le PDF : il partage la
+même mécanique de position (en secondes) que la vidéo, déjà posée,
+alors que le PDF progresse par page et suppose d'abord de connaître
+le nombre de pages — pas encore lu au scan (voir backlog).
 
 Progression selon le type : secondes pour vidéo et audio, page pour PDF,
 position pour EPUB.
@@ -880,6 +1004,17 @@ backlog plus difficile à corriger sans le signaler d'abord.
 - Éditeur de notes enrichi (le Markdown s'affiche mis en forme au lieu
   d'être tapé) : V2. Le stockage reste le même Markdown brut, posé dès
   la V1 pour ne rien casser au passage.
+- Lecture des documents dans le navigateur. Tout fichier lisible —
+  PDF, EPUB, TXT, Markdown — doit s'ouvrir dans un lecteur interne de
+  l'application, avec mode plein écran, plutôt que d'être seulement
+  téléchargeable. Vaut aussi bien pour un fichier média d'un livre que
+  pour une ressource d'une formation : une ressource s'ouvre dans le
+  même lecteur qu'un livre, sans changer de contexte. Chaque fichier
+  reste par ailleurs téléchargeable. Écarté explicitement : la
+  présentation en double page façon catalogue feuilletable, trop
+  lourde pour le bénéfice. Les ressources n'ont pas besoin de
+  mémoriser une position de lecture (fiches, exemples, compléments) ;
+  les livres oui, par page.
 
 ## Méthode de travail
 
