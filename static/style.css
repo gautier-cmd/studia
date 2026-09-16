@@ -897,6 +897,16 @@ body.page-player .card {
     font-family: inherit;
 }
 
+/* Couleur de substitution explicite plutôt que la valeur par défaut du
+   navigateur (non garantie, non mesurable à l'avance) : text-tertiary
+   sur --color-surface ou --color-bg mesure 5,6:1 et 6:1, au-dessus du
+   seuil AA (4,5:1) dans les deux cas. */
+.library-search::placeholder,
+.note-card textarea::placeholder {
+    color: var(--color-text-tertiary);
+    opacity: 1;
+}
+
 .library-search:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 1px;
@@ -934,8 +944,10 @@ body.page-player .card {
 }
 
 .filter-count {
+    /* Pas d'opacité réduite : sur une chip active (texte accent sur
+       fond teinté), ça descendait à 3,51:1 — sous le seuil AA (4,5:1)
+       mesuré pour du texte normal. Mesuré, pas jugé à l'œil. */
     color: inherit;
-    opacity: 0.75;
 }
 
 .library-sort {
