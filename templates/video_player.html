@@ -78,7 +78,10 @@
         }
 
         function syncPlaylistHeight() {
-            if (window.innerWidth <= 900) {
+            // Repère de palier (tokens.css : 720/1120/1440) : sous
+            // 720px, .layout passe en colonne (voir static/style.css)
+            // et la playlist suit sa propre hauteur naturelle.
+            if (window.innerWidth <= 719) {
                 playlist.style.height = '';
                 return;
             }

@@ -1427,7 +1427,19 @@ video {
     font-weight: var(--font-weight-semibold);
 }
 
-@media (max-width: 900px) {
+/* Tablette (720–1119px) : toujours côte à côte, mais le programme
+   prend moins de place pour laisser de la place à la vidéo — le
+   chapitre courant reste repliable comme sur desktop (point 30 de la
+   revue). */
+@media (max-width: 1119px) {
+    .playlist {
+        width: 240px;
+    }
+}
+
+/* Smartphone (<720px) : vidéo pleine largeur, programme sous la vidéo
+   (point 30 de la revue). */
+@media (max-width: 719px) {
     .layout {
         flex-direction: column;
     }
