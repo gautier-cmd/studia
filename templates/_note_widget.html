@@ -39,6 +39,7 @@
 <script>
 (function () {
     var itemId = {{ item_id | tojson }};
+    var noteCard = document.getElementById('notes');
     var textarea = document.getElementById('note-text');
     var preview = document.getElementById('note-preview');
     var previewToggle = document.getElementById('toggle-preview');
@@ -273,19 +274,95 @@
     // texte à trous si rien n'est sélectionné) plutôt que de composer
     // du HTML : la note reste du Markdown brut, l'aperçu se charge de
     // l'afficher mis en forme.
+    //
+    // Ce sont de vrais interrupteurs : avant d'ajouter un marqueur, on
+    // vérifie s'il est déjà là pour le retirer plutôt que de l'empiler
+    // (sinon un second clic sur Gras donnerait ****texte****). Deux cas
+    // possibles pour un marqueur qui entoure du texte (gras, italique,
+    // bloc de code) : la sélection est le texte pur, sans les
+    // marqueurs (on les cherche juste avant/après la sélection) ; ou
+    // la sélection inclut déjà les marqueurs (on les retire à
+    // l'intérieur). Pour les titres et la liste, la détection se fait
+    // ligne par ligne sur un préfixe.
+    function finishEdit(selStart, selEnd) {
+        textarea.focus();
+        textarea.setSelectionRange(selStart, selEnd);
+        textarea.dispatchEvent(new Event('input'));
+    }
+
     function wrapSelection(before, after, placeholder) {
         var start = textarea.selectionStart;
         var end = textarea.selectionEnd;
         var value = textarea.value;
         var selected = value.slice(start, end) || placeholder;
         textarea.value = value.slice(0, start) + before + selected + after + value.slice(end);
-        var selStart = start + before.length;
-        textarea.focus();
-        textarea.setSelectionRange(selStart, selStart + selected.length);
-        textarea.dispatchEvent(new Event('input'));
+        finishEdit(start + before.length, start + before.length + selected.length);
     }
 
-    function prefixLines(prefix) {
+    // Retire `marker` autour de la sélection s'il y est déjà ; renvoie
+    // false sinon (rien fait, à ajouter par l'appelant).
+    function stripAround(marker) {
+        var start = textarea.selectionStart;
+        var end = textarea.selectionEnd;
+        var value = textarea.value;
+        var mLen = marker.length;
+        var selected = value.slice(start, end);
+
+        // La sélection inclut déjà les marqueurs ("**texte**" entier).
+        if (selected.length > mLen * 2
+            && selected.slice(0, mLen) === marker
+            && selected.slice(-mLen) === marker) {
+            var inner = selected.slice(mLen, selected.length - mLen);
+            textarea.value = value.slice(0, start) + inner + value.slice(end);
+            finishEdit(start, start + inner.length);
+            return true;
+        }
+
+        // Italique (un seul "*") : un "*" adjacent ne suffit pas à
+        // conclure, puisqu'une paire de gras ("**") et un triple gras
+        // + italique ("***") partagent le même caractère immédiat. On
+        // compte toute la série d'astérisques de chaque côté : un
+        // compte impair (1, ou 3 pour du texte déjà en gras) signifie
+        // qu'il y a bien une couche italique, à retirer seule sans
+        // toucher au gras ; un compte pair (0 ou 2) signifie qu'il n'y
+        // en a pas encore.
+        if (mLen === 1) {
+            var runBefore = 0;
+            while (start - runBefore - 1 >= 0 && value[start - runBefore - 1] === '*') {
+                runBefore += 1;
+            }
+            var runAfter = 0;
+            while (end + runAfter < value.length && value[end + runAfter] === '*') {
+                runAfter += 1;
+            }
+            if (runBefore % 2 === 1 && runAfter % 2 === 1) {
+                textarea.value = value.slice(0, start - 1) + selected + value.slice(end + 1);
+                finishEdit(start - 1, start - 1 + selected.length);
+                return true;
+            }
+            return false;
+        }
+
+        // Gras (deux "*") : les marqueurs entourent la sélection
+        // ("texte" sélectionné seul, "**" de chaque côté en dehors).
+        var before = value.slice(Math.max(0, start - mLen), start);
+        var after = value.slice(end, end + mLen);
+        if (before === marker && after === marker) {
+            textarea.value = value.slice(0, start - mLen) + selected + value.slice(end + mLen);
+            finishEdit(start - mLen, start - mLen + selected.length);
+            return true;
+        }
+
+        return false;
+    }
+
+    function toggleWrap(marker, placeholder) {
+        if (!stripAround(marker)) {
+            wrapSelection(marker, marker, placeholder);
+        }
+    }
+
+    function currentLineBlock() {
         var start = textarea.selectionStart;
         var end = textarea.selectionEnd;
         var value = textarea.value;
@@ -294,35 +371,84 @@
         if (lineEnd === -1) {
             lineEnd = value.length;
         }
-        var block = value.slice(lineStart, lineEnd);
-        var prefixed = block.split('\n').map(function (line) { return prefix + line; }).join('\n');
-        textarea.value = value.slice(0, lineStart) + prefixed + value.slice(lineEnd);
-        textarea.focus();
-        textarea.setSelectionRange(lineStart, lineStart + prefixed.length);
-        textarea.dispatchEvent(new Event('input'));
+        return {value: value, lineStart: lineStart, lineEnd: lineEnd, block: value.slice(lineStart, lineEnd)};
     }
 
-    function insertCodeBlock() {
+    function toggleHeading(level) {
+        var ctx = currentLineBlock();
+        var prefix = '#'.repeat(level) + ' ';
+        var headingPattern = /^(#{1,3})\s+/;
+
+        var newBlock = ctx.block.split('\n').map(function (line) {
+            var match = line.match(headingPattern);
+            var withoutHeading = match ? line.slice(match[0].length) : line;
+            var alreadyThisLevel = !!match && match[1].length === level;
+            return alreadyThisLevel ? withoutHeading : prefix + withoutHeading;
+        }).join('\n');
+
+        textarea.value = ctx.value.slice(0, ctx.lineStart) + newBlock + ctx.value.slice(ctx.lineEnd);
+        finishEdit(ctx.lineStart, ctx.lineStart + newBlock.length);
+    }
+
+    function toggleList() {
+        var ctx = currentLineBlock();
+        var listPattern = /^[-*]\s+/;
+        var lines = ctx.block.split('\n');
+        var nonBlank = lines.filter(function (line) { return line.trim() !== ''; });
+        var allListed = nonBlank.length > 0 && nonBlank.every(function (line) { return listPattern.test(line); });
+
+        var newBlock = lines.map(function (line) {
+            if (line.trim() === '') {
+                return line;
+            }
+            if (allListed) {
+                return line.replace(listPattern, '');
+            }
+            return listPattern.test(line) ? line : '- ' + line;
+        }).join('\n');
+
+        textarea.value = ctx.value.slice(0, ctx.lineStart) + newBlock + ctx.value.slice(ctx.lineEnd);
+        finishEdit(ctx.lineStart, ctx.lineStart + newBlock.length);
+    }
+
+    function toggleCodeBlock() {
         var start = textarea.selectionStart;
         var end = textarea.selectionEnd;
         var value = textarea.value;
-        var selected = value.slice(start, end) || 'code';
-        var replacement = '```\n' + selected + '\n```';
+        var selected = value.slice(start, end);
+
+        // La sélection inclut déjà les clôtures ``` en entier.
+        var fullMatch = selected.match(/^```\n([\s\S]*)\n```$/);
+        if (fullMatch) {
+            textarea.value = value.slice(0, start) + fullMatch[1] + value.slice(end);
+            finishEdit(start, start + fullMatch[1].length);
+            return;
+        }
+
+        // Les clôtures encadrent la sélection (le code seul est sélectionné).
+        var openMatch = value.slice(0, start).match(/```\n$/);
+        var closeMatch = value.slice(end).match(/^\n```/);
+        if (openMatch && closeMatch) {
+            var newStart = start - openMatch[0].length;
+            var newEnd = end + closeMatch[0].length;
+            textarea.value = value.slice(0, newStart) + selected + value.slice(newEnd);
+            finishEdit(newStart, newStart + selected.length);
+            return;
+        }
+
+        var replacement = '```\n' + (selected || 'code') + '\n```';
         textarea.value = value.slice(0, start) + replacement + value.slice(end);
-        var selStart = start + 4;
-        textarea.focus();
-        textarea.setSelectionRange(selStart, selStart + selected.length);
-        textarea.dispatchEvent(new Event('input'));
+        finishEdit(start + 4, start + 4 + (selected || 'code').length);
     }
 
     var TOOLBAR_ACTIONS = {
-        bold: function () { wrapSelection('**', '**', 'texte en gras'); },
-        italic: function () { wrapSelection('*', '*', 'texte en italique'); },
-        h1: function () { prefixLines('# '); },
-        h2: function () { prefixLines('## '); },
-        h3: function () { prefixLines('### '); },
-        list: function () { prefixLines('- '); },
-        code: function () { insertCodeBlock(); }
+        bold: function () { toggleWrap('**', 'texte en gras'); },
+        italic: function () { toggleWrap('*', 'texte en italique'); },
+        h1: function () { toggleHeading(1); },
+        h2: function () { toggleHeading(2); },
+        h3: function () { toggleHeading(3); },
+        list: function () { toggleList(); },
+        code: function () { toggleCodeBlock(); }
     };
 
     document.querySelectorAll('.toolbar-btn[data-md]').forEach(function (button) {
@@ -334,6 +460,22 @@
         });
     });
 
+    function renderEmptyPreview() {
+        preview.innerHTML = '';
+
+        var emptyHint = document.createElement('p');
+        emptyHint.className = 'hint';
+        emptyHint.textContent = 'Pas encore de note.';
+        preview.appendChild(emptyHint);
+
+        var editButton = document.createElement('button');
+        editButton.type = 'button';
+        editButton.className = 'btn-mini';
+        editButton.textContent = 'Éditer';
+        editButton.addEventListener('click', function () { setPreviewMode(false); });
+        preview.appendChild(editButton);
+    }
+
     function setPreviewMode(active) {
         preview.hidden = !active;
         textarea.hidden = active;
@@ -342,15 +484,58 @@
             button.hidden = active;
         });
         if (active) {
-            preview.innerHTML = renderMarkdown(textarea.value);
+            if (textarea.value.trim()) {
+                preview.innerHTML = renderMarkdown(textarea.value);
+            } else {
+                renderEmptyPreview();
+            }
         } else {
             textarea.focus();
         }
     }
 
-    previewToggle.addEventListener('click', function () {
-        setPreviewMode(preview.hidden);
+    // Le bouton Aperçu/Éditer se déclenche au clic, après un éventuel
+    // "blur" du champ (voir plus bas) qui aurait déjà changé l'état —
+    // l'intention réelle du clic est capturée dès le "mousedown", qui
+    // se produit avant ce "blur", pour ne pas se retrouver à l'annuler
+    // par erreur juste après.
+    var toggleIntent = null;
+    previewToggle.addEventListener('mousedown', function () {
+        toggleIntent = preview.hidden;
     });
+    previewToggle.addEventListener('click', function () {
+        var goToPreview = toggleIntent !== null ? toggleIntent : preview.hidden;
+        toggleIntent = null;
+        if (goToPreview) {
+            clearTimeout(saveTimer);
+            saveToServer(false);
+        }
+        setPreviewMode(goToPreview);
+    });
+
+    {% if player_context %}
+    // Sur le lecteur, on écrit en regardant la vidéo : l'édition reste
+    // le mode par défaut, un aller-retour supplémentaire par note
+    // serait pénible.
+    {% else %}
+    // Sur la fiche, l'aperçu est le mode par défaut ; l'édition n'est
+    // qu'une parenthèse. On y retourne dès que le focus quitte le
+    // champ (pas seulement au bout des 900 ms de la sauvegarde
+    // automatique, qui se déclenche aussi en pleine réflexion entre
+    // deux phrases) — sauf si le focus reste dans le bloc Notes (un
+    // bouton de la barre d'outils, qui reprend lui-même le focus juste
+    // après).
+    setPreviewMode(true);
+
+    textarea.addEventListener('blur', function (event) {
+        if (event.relatedTarget && noteCard.contains(event.relatedTarget)) {
+            return;
+        }
+        clearTimeout(saveTimer);
+        saveToServer(false);
+        setPreviewMode(true);
+    });
+    {% endif %}
 
     renderMarkers();
 
@@ -374,6 +559,7 @@
                 banner.innerHTML = '';
                 renderMarkers();
                 saveToServer(false);
+                setPreviewMode(false);
             });
 
             message.appendChild(restoreButton);
