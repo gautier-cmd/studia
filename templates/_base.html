@@ -88,14 +88,39 @@
         var toggle = document.getElementById('sidebar-toggle');
         var sidebar = document.getElementById('sidebar');
         var backdrop = document.getElementById('sidebar-backdrop');
+        var appMain = document.querySelector('.app-main');
+        // Palier smartphone (tokens.css : <720px, voir static/style.css).
+        var narrowQuery = window.matchMedia('(max-width: 719px)');
+
+        // Une translation CSS ne retire rien de l'ordre de tabulation :
+        // sans ceci, les liens de la sidebar fermée restent atteignables
+        // au Tab tout en étant invisibles, et une fois ouverte, le Tab
+        // peut continuer dans le contenu masqué par le fond
+        // d'estompage. "inert" (natif, pas de bibliothèque) retire un
+        // sous-arbre entier de la tabulation et de l'arborescence
+        // d'accessibilité — appliqué seulement au palier smartphone, où
+        // la sidebar bascule en tiroir ; aux autres paliers, elle est
+        // toujours visible et ne doit jamais être rendue inerte.
+        function updateInert() {
+            var narrow = narrowQuery.matches;
+            var open = document.body.classList.contains('sidebar-open');
+            sidebar.inert = narrow && !open;
+            appMain.inert = narrow && open;
+        }
+
         function closeDrawer() {
             document.body.classList.remove('sidebar-open');
             toggle.setAttribute('aria-expanded', 'false');
+            updateInert();
+            toggle.focus();
         }
 
         function openDrawer() {
             document.body.classList.add('sidebar-open');
             toggle.setAttribute('aria-expanded', 'true');
+            updateInert();
+            var firstLink = sidebar.querySelector('a, button');
+            if (firstLink) { firstLink.focus(); }
         }
 
         toggle.addEventListener('click', function () {
@@ -117,6 +142,14 @@
                 closeDrawer();
             }
         });
+
+        // "change" sur la media query est le mécanisme standard, mais
+        // se recaler aussi sur un redimensionnement direct de la
+        // fenêtre coûte rien et évite de dépendre d'un seul chemin pour
+        // une fonction dont l'échec rendrait toute la page inerte.
+        narrowQuery.addEventListener('change', updateInert);
+        window.addEventListener('resize', updateInert);
+        updateInert();
     })();
     </script>
 </body>
