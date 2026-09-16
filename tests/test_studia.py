@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from library_index import scan_library  # noqa: E402
+from library_index import format_duration, scan_library  # noqa: E402
 from studia import create_app  # noqa: E402
 
 
@@ -558,3 +558,129 @@ def test_recherche_isbn_priorisee_sur_le_titre(client, monkeypatch) -> None:
     )
 
     assert appels == [("voir 9782744025488 pour cette edition", "9782744025488")]
+
+
+# Cas extrêmes (revue, point 34) : construits dans une base et une
+# bibliothèque jetables (tmp_path), jamais dans la bibliothèque réelle
+# de Gautier. Le but n'est pas d'obtenir des chiffres exacts ("128 h
+# 35", "124 chapitres") mais de vérifier que la fiche ne plante pas et
+# n'invente rien face à des valeurs bien plus grandes ou bien plus
+# vides que celles de la bibliothèque de test habituelle.
+
+
+def test_item_avec_titre_auteur_tres_longs_et_beaucoup_de_chapitres(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "library"
+    long_title = (
+        "Une formation complete et particulierement detaillee sur absolument "
+        "tous les aspects du sujet, avec un titre si long qu il devrait se "
+        "faire couper quelque part dans l interface (TUTO.com)"
+    )
+    course = root / long_title
+    for n in range(1, 125):
+        make_file(course / f"{n:04d} - Chapitre {n}" / "001 - Video.mp4")
+
+    long_author = (
+        "Jean-Baptiste-Alphonse-Theodore de Montmorency-Lavalette, avec la "
+        "participation exceptionnelle de nombreux autres formateurs dont les "
+        "noms ne tiendraient pas sur une seule ligne de la fiche"
+    )
+    make_file(
+        course / "000 - presentation.html",
+        f"""
+        <html><body>
+        <h1>{long_title}</h1>
+        <table>
+        <tr><td class="k">Formateur(s)</td><td>{long_author}</td></tr>
+        </table>
+        </body></html>
+        """.encode(),
+    )
+
+    db = tmp_path / "data" / "studia.db"
+    scan_library(root, db, verbose=False)
+
+    app = create_app(root, db)
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        import sqlite3
+
+        conn = sqlite3.connect(db)
+        try:
+            item_id = conn.execute(
+                "SELECT id FROM items WHERE title = ?", (long_title,)
+            ).fetchone()[0]
+            # 124 vidéos de 3735 secondes : plusieurs jours au total,
+            # pour vérifier que le format d'affichage (h/min) ne
+            # suppose pas une durée raisonnable.
+            conn.execute(
+                "UPDATE media SET duration_seconds = 3735.0, probed_at = 'test' "
+                "WHERE item_id = ?",
+                (item_id,),
+            )
+            conn.commit()
+            total_seconds = conn.execute(
+                "SELECT SUM(duration_seconds) FROM media WHERE item_id = ?",
+                (item_id,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        response = client.get(f"/item/{item_id}")
+        data = response.data.decode()
+
+        assert response.status_code == 200
+        assert format_duration(total_seconds) in data
+        assert "124 chapitres" in data
+        assert long_title in data
+        assert long_author in data
+        assert data.count('class="programme-chapter"') == 124
+
+        # La grille aussi doit survivre à un titre de cette taille.
+        assert client.get("/").status_code == 200
+
+
+def test_item_sans_metadonnees_ni_couverture_avec_beaucoup_de_ressources(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "library"
+    item_dir = root / "Dossier sans aucune metadonnee"
+    make_file(item_dir / "contenu.pdf")
+    for n in range(1, 41):
+        make_file(item_dir / f"ressource-{n:03d}.zip")
+
+    db = tmp_path / "data" / "studia.db"
+    scan_library(root, db, verbose=False)
+
+    app = create_app(root, db)
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        import sqlite3
+
+        conn = sqlite3.connect(db)
+        try:
+            item_id = conn.execute(
+                "SELECT id FROM items WHERE title = ?",
+                ("Dossier sans aucune metadonnee",),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        response = client.get(f"/item/{item_id}")
+        data = response.data.decode()
+
+        assert response.status_code == 200
+        # Aucune extraction de couverture n'a été lancée (--covers est
+        # un pas manuel séparé) : pas d'image, juste le repli par type.
+        assert "cover-placeholder" in data
+        # Aucune présentation, aucune fiche livre validée : un état
+        # vide honnête plutôt qu'une valeur inventée.
+        assert "Pas de description disponible." in data
+        # Deux fois chacune : le nom visible (sans extension) et
+        # l'infobulle title="..." (nom complet, ajoutée pour les titres
+        # tronqués).
+        assert data.count("ressource-0") == 80
+        assert "None" not in data
