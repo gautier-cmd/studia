@@ -75,8 +75,10 @@
                     <svg class="icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
                 </button>
             </div>
-            {% block header %}{% endblock %}
-            {% block content %}{% endblock %}
+            <div id="app-content">
+                {% block header %}{% endblock %}
+                {% block content %}{% endblock %}
+            </div>
         </div>
     </div>
 
@@ -88,7 +90,10 @@
         var toggle = document.getElementById('sidebar-toggle');
         var sidebar = document.getElementById('sidebar');
         var backdrop = document.getElementById('sidebar-backdrop');
-        var appMain = document.querySelector('.app-main');
+        // Le contenu de page proprement dit, séparé du bouton hamburger
+        // (voir plus bas) : lui seul doit devenir inerte, jamais le
+        // bouton qui sert justement à refermer le tiroir.
+        var appContent = document.getElementById('app-content');
         // Palier smartphone (tokens.css : <720px, voir static/style.css).
         var narrowQuery = window.matchMedia('(max-width: 719px)');
 
@@ -100,17 +105,23 @@
         // sous-arbre entier de la tabulation et de l'arborescence
         // d'accessibilité — appliqué seulement au palier smartphone, où
         // la sidebar bascule en tiroir ; aux autres paliers, elle est
-        // toujours visible et ne doit jamais être rendue inerte.
+        // toujours visible et ne doit jamais être rendue inerte. Le
+        // bouton hamburger (dans .mobile-topbar, hors de #app-content)
+        // reste toujours cliquable : le geste naturel pour refermer un
+        // tiroir est de recliquer sur le bouton qui l'a ouvert, un
+        // utilisateur clavier n'a pas besoin qu'on le retire à un
+        // utilisateur souris.
         function updateInert() {
             var narrow = narrowQuery.matches;
             var open = document.body.classList.contains('sidebar-open');
             sidebar.inert = narrow && !open;
-            appMain.inert = narrow && open;
+            appContent.inert = narrow && open;
         }
 
         function closeDrawer() {
             document.body.classList.remove('sidebar-open');
             toggle.setAttribute('aria-expanded', 'false');
+            toggle.setAttribute('aria-label', 'Ouvrir le menu');
             updateInert();
             toggle.focus();
         }
@@ -118,6 +129,7 @@
         function openDrawer() {
             document.body.classList.add('sidebar-open');
             toggle.setAttribute('aria-expanded', 'true');
+            toggle.setAttribute('aria-label', 'Fermer le menu');
             updateInert();
             var firstLink = sidebar.querySelector('a, button');
             if (firstLink) { firstLink.focus(); }
