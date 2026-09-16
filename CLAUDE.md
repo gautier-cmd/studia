@@ -225,19 +225,23 @@ prochain chargement de page.
   local (localStorage) garde aussi chaque frappe : si une version plus
   récente que celle du serveur est retrouvée au chargement (crash juste
   avant l'envoi différé), la page propose de la restaurer.
-- Le bouton "Insérer un repère" (uniquement sur le lecteur) écrit une
-  ligne texte au format "Vidéo N — titre — mm:ss (/watch/id?t=secondes)"
-  à la position du curseur. Ces lignes sont aussi détectées par une
-  expression régulière côté navigateur et affichées comme une petite
-  liste cliquable au-dessus du champ — pas de zone de texte enrichi,
-  juste un motif reconnu dans le texte brut.
+- Le bouton "Insérer un repère" (uniquement sur le lecteur, dans la
+  barre d'outils depuis la tranche 8) écrit une ligne texte au format
+  "Vidéo N — titre — mm:ss (/watch/id?t=secondes)" à la position du
+  curseur. Ces lignes sont aussi détectées par une expression
+  régulière côté navigateur et affichées comme une liste cliquable
+  sous le champ, chacune avec une croix qui retire seulement cette
+  ligne du texte — pas de zone de texte enrichi, juste un motif
+  reconnu dans le texte brut.
 - La reprise de position (?t=secondes) se fait par script sur
   l'évènement loadedmetadata du lecteur, pas par le fragment d'URL
   #t=secondes : ce fragment (pourtant standard, "Media Fragments URI")
   s'est révélé peu fiable ici pour positionner une vidéo servie
   localement — vérifié en pratique, currentTime restait à 0.
-- Bouton Imprimer : une feuille de style @media print masque tout sauf
-  le titre de l'item, la date du jour et le texte de la note.
+- Impression (accessible depuis le menu ⋮ du bloc depuis la tranche 8,
+  plus un bouton dédié) : une feuille de style @media print masque
+  tout sauf le titre de l'item, la date du jour et le rendu de la
+  note — le même rendu Markdown que l'aperçu, pas le texte brut.
 
 Pas encore fait : sauvegarde de la position de lecture (progress),
 lecteur audio/PDF.
@@ -326,12 +330,13 @@ migration.
 3. Extraction des couvertures (PDF, M4B, vidéo), cache hors bibliothèque,
    jamais écrites dedans ; placeholder par type sinon — fait, voir
    ci-dessous.
-4. Écran Bibliothèque : recherche, filtres, grille, cartes.
+4. Écran Bibliothèque : recherche, filtres, grille, cartes — fait,
+   voir ci-dessous.
 5. Responsive.
 6. Fiche de contenu — fait, voir ci-dessous.
-7. Lecteur vidéo et programme.
-8. Notes.
-9. États vides et erreurs.
+7. Lecteur vidéo et programme — fait, voir ci-dessous.
+8. Notes — fait, voir ci-dessous.
+9. États vides et erreurs — fait, voir ci-dessous.
 
 ### Tranche 1 — design tokens (fait)
 
@@ -452,9 +457,58 @@ PDF (avec un PDF minimal écrit à la main, `pdftoppm` s'en accommode
 sans xref complet), et toute la logique de cache/priorité/repli avec
 des extracteurs remplacés.
 
-La carte de la grille n'est pas encore celle de la spec (16:9, badge,
-auteur...) — seul le remplacement emoji -> image a été branché pour
-vérifier le mécanisme. La vraie carte vient en tranche 4.
+À ce stade, la carte de la grille n'était pas encore celle de la spec
+(16:9, badge, auteur...) — seul le remplacement emoji -> image avait
+été branché pour vérifier le mécanisme. La vraie carte est venue avec
+la tranche 4 (ci-dessous).
+
+### Tranche 4 — écran Bibliothèque (fait)
+
+Reprise de `templates/library_grid.html` selon les points 12, 13, 31
+et 32 de la revue (`design/revue-ui.md`) :
+
+- **Auteur/formateur sur la carte.** `fetch_item_author()` (studia.py)
+  réutilise exactement la même résolution que la fiche
+  (`resolve_metadata_fields()` puis `extract_hero_fields()`), pas un
+  second chemin qui risquerait de diverger. Titre limité à 2 lignes,
+  auteur à 1 ligne, hauteur de carte uniforme pour que les cartes ne
+  varient plus avec la longueur du contenu.
+- **Recherche, filtres, tri.** Recherche instantanée (débattue à
+  150 ms) sur titre et auteur, chips de filtre par type avec les vrais
+  effectifs, tri (titre / récemment ajoutés) — tout côté client,
+  puisque toute la bibliothèque tient déjà sur une seule page sans
+  pagination. Recherche, filtre actif et tri restent mémorisés d'une
+  navigation à l'autre (`sessionStorage`).
+- **Couleurs et icônes de couverture.** Les couleurs de repli
+  `.cover.*` (restées de l'ancien thème bleu, jamais migrées vers les
+  tokens) reprennent les mêmes `--color-badge-*` que les badges de
+  type ; les émojis colorés sont remplacés par les mêmes icônes SVG
+  dessinées à la main que le repli de la fiche, factorisées dans une
+  macro partagée (`_type_icon.html`) plutôt que dupliquées dans les
+  deux gabarits.
+- **Correctif :** le passage de `.card-body` en colonne flexible (pour
+  un espacement homogène) étirait tous ses enfants directs en pleine
+  largeur par défaut (`align-items: stretch`), y compris le badge —
+  qui doit épouser son propre texte, comme sur la fiche. Correctif
+  scopé au badge seul plutôt que de changer `align-items` du
+  conteneur, dont les autres enfants ont besoin pour se tronquer
+  correctement.
+
+Écarté à cette étape, sur demande de Gautier : la progression sur la
+carte et l'écran « Continuer » (tant que `progress` n'est pas
+alimenté, ce serait simuler une fonctionnalité) ; les états vides
+(couverts en tranche 9) ; le menu ⋮ toujours visible sur la carte,
+réservé à une tranche commune avec celui de la fiche — fait depuis sur
+la fiche, pas encore sur la carte.
+
+Deux coûts mesurés et consignés au backlog plutôt qu'optimisés
+immédiatement : `fetch_item_author()` reparse la présentation de
+chaque item à chaque chargement de la grille ; le tri « Récemment
+ajoutés » ne reflète la vraie date de premier scan qu'une fois la base
+déjà peuplée (voir backlog pour le détail des deux).
+
+Vérifié à l'œil sur les 4 items de la bibliothèque de test, `pytest
+tests/` (73 tests) au vert.
 
 ### Tranche 6 — fiche de contenu (fait)
 
@@ -485,12 +539,13 @@ Cinq corrections demandées par Gautier :
      l'onglet Programme, en accordéon (`<details>`) replié par défaut.
    - Sur Adobe Illustrator, Auteur/Éditeur apparaissaient à la fois
      dans les faits extraits de la présentation et dans la carte
-     Métadonnées validée. `filter_duplicated_presentation_facts()`
-     (studia.py) retire des faits de présentation les libellés que la
-     carte Métadonnées affiche déjà, une fois validée — **correctif
-     provisoire** : la vraie solution (traçabilité de la source de
-     chaque champ) est la prochaine tranche demandée par Gautier, pas
-     encore commencée.
+     Métadonnées validée — corrigé sur le moment par un masquage
+     provisoire des libellés en double (`filter_duplicated_presentation_facts()`).
+     Ce correctif a depuis disparu : `resolve_metadata_fields()` (voir
+     « Traçabilité des métadonnées » ci-dessous) résout un seul champ
+     par concept bibliographique avec une vraie priorité de source —
+     la présentation locale ne s'affiche plus jamais à côté d'une
+     valeur de fiche livre validée pour le même concept.
 3. **Bouton d'action principal** du hero : lien direct vers la première
    vidéo (`first_video_id`) si l'item en a une, sinon un bouton désactivé
    pour livre/audiobook (pas encore de lecteur audio/PDF).
@@ -513,33 +568,175 @@ Cinq corrections demandées par Gautier :
 Vérifié à l'œil sur les 4 items de la bibliothèque de test (grille et
 fiches), `pytest tests/` (73 tests) au vert.
 
-### Traçabilité des métadonnées — règle actée, pas encore implémentée
+### Tranche 7 — lecteur vidéo et programme (fait)
 
-Décidé avec Gautier, à mettre en œuvre dans une tranche séparée (pas
-commencée) : **aucun champ de métadonnée sans source identifiée.**
+Reprise de `templates/video_player.html` selon les points 18 et 19 de
+la revue :
 
-- Chaque champ stocke sa source : scanner, présentation locale
-  (`000 - Presentation....html`), Google Books, Open Library, saisie
-  manuelle, ou une source fournie explicitement par Gautier lui-même
-  (à nommer comme telle, pas confondue avec le scanner).
+- **Extensions masquées.** Titre de page, `<h1>` et chaque ligne de la
+  playlist passent par `clean_file_title()`, comme partout ailleurs —
+  plus de `.mp4` visible.
+- **Playlist par chapitre.** Elle reflète maintenant les chapitres
+  réels, en accordéon (`<details>`), au lieu d'une liste plate — même
+  structure que l'onglet Programme de la fiche. Quand un item n'a
+  qu'un seul groupe et qu'il correspond à la racine (pas de
+  sous-dossier, ex. Copywriter et ses 49 vidéos), l'en-tête « Racine »
+  n'est pas affiché : il ne coifferait qu'un unique groupe contenant
+  tout le contenu, sans rien distinguer. Le total (nombre de vidéos,
+  durée) reste visible dans le hero de la fiche, qui couvre déjà tout
+  l'item dans ce cas.
+- **Chapitre courant et état conservé.** Le chapitre qui contient la
+  vidéo en cours s'ouvre toujours automatiquement ; l'état ouvert/fermé
+  de chaque autre chapitre est mémorisé par item (`localStorage`) et
+  survit à la navigation d'une vidéo à l'autre (point 32, persistance
+  d'état, pour ce panneau spécifiquement).
+- **Leçon en cours plus visible.** Fond teinté et liseré orange sur la
+  ligne active (point 19), volontairement restreint à ces deux
+  éléments — pas d'icône lecture ni de coche « terminé », qui
+  supposerait une progression enregistrée, hors périmètre tant que
+  `progress` n'est pas alimenté.
+- **Colonne de durée stable.** La playlist reprend le motif de
+  l'onglet Programme (titre tronqué sur une ligne, durée figée à
+  droite) : un titre long ne pousse plus la durée hors de vue.
+
+Hors périmètre, sur demande de Gautier : la progression et les états
+de leçon ; le responsive (tranche 5, pas commencée).
+
+Vérifié à l'œil sur Copywriter (49 vidéos, pas de sous-dossier) et
+Motion Design (27 chapitres), `pytest tests/` (73 tests) au vert.
+
+### Tranche 8 — notes (fait)
+
+Complète le « Format des notes » décrit plus haut, jusque-là non
+implémenté malgré le stockage Markdown déjà en place depuis le
+Bloc-notes initial :
+
+- **Barre d'outils.** Gras, italique, titres 1 à 3, liste, bloc de
+  code. Chaque bouton est un véritable interrupteur plutôt qu'un
+  simple ajout : recliquer sur un format déjà appliqué le retire, au
+  lieu d'empiler les marqueurs (`****texte****`). Détection : pour
+  gras/italique, soit la sélection inclut déjà les marqueurs, soit ils
+  se trouvent juste à l'extérieur de la sélection ; pour l'italique
+  spécifiquement, un seul `*` adjacent ne suffit pas à conclure (une
+  paire de gras et un triple gras+italique partagent le même caractère
+  immédiat) — la détection compte la série complète d'astérisques de
+  chaque côté, un compte impair signalant une couche italique
+  isolable, un compte pair son absence. Pour les titres et la liste,
+  la détection se fait ligne par ligne ; pour le bloc de code, sur les
+  clôtures ``` immédiatement à l'extérieur de la sélection ou incluses
+  dedans. Pas de bouton souligné : absent du Markdown standard, et les
+  notes ne doivent contenir aucun HTML. Le bouton « Insérer un repère »
+  (déjà existant) rejoint cette barre, sur le lecteur uniquement.
+- **Aperçu, par défaut sur la fiche.** Un moteur Markdown minimal,
+  écrit à la main (aucune bibliothèque externe — l'appli doit rester
+  utilisable hors connexion), limité exactement à ce que la barre
+  d'outils peut produire, plus les repères horodatés rendus en lien
+  cliquable. Le texte est échappé avant toute mise en forme. Sur la
+  fiche, l'aperçu est l'état par défaut à l'ouverture (une note se lit
+  plus souvent qu'elle ne s'édite) ; « Éditer » fait apparaître le
+  champ et la barre d'outils, et quitter le champ (perte de focus)
+  sauvegarde immédiatement et repasse en aperçu — déclenché sur la
+  perte de focus elle-même, mesuré à moins d'une milliseconde après le
+  clic, plutôt qu'à la fin des 900 ms de la sauvegarde différée, qui
+  aurait pu laisser la note en édition un moment après un clic
+  ailleurs, ou ne jamais revenir en aperçu si la dernière frappe datait
+  déjà de plus de 900 ms. Le bouton Aperçu/Éditer capture son intention
+  dès l'appui (`mousedown`), avant cette même perte de focus, pour ne
+  pas s'annuler lui-même. Sur le lecteur, l'édition reste l'état par
+  défaut : la note s'écrit en regardant la vidéo, un aller-retour
+  supplémentaire serait pénible. Une fiche sans note affiche un état
+  vide court (« Pas encore de note. ») avec son propre bouton Éditer,
+  plutôt qu'un rectangle vide.
+- **Impression.** Passe par le même moteur que l'aperçu au lieu d'un
+  texte brut : les repères s'y affichent comme des liens propres, sans
+  leur fragment technique (`/watch/id?t=secondes`).
+- **Imprimer déplacé.** Sort de la barre pour rejoindre un menu ⋮ à
+  côté du titre « Notes », qui réutilise le motif du menu ⋮ du hero
+  (`.hero-menu`) plutôt que d'en recréer un.
+
+Hors périmètre, sur demande de Gautier : tout changement de stockage
+(reste le même Markdown brut, une note par contenu) ; l'éditeur
+enrichi (WYSIWYG), toujours au backlog en V2 pour la même raison
+qu'avant — le stockage Markdown brut permet de le greffer plus tard
+sans migration.
+
+Vérifié à l'œil sur la fiche (avec et sans note) et le lecteur,
+`pytest tests/` (74 tests) au vert.
+
+### Tranche 9 — états vides et erreurs (fait)
+
+Revue des six états demandés (aucun résultat, aucune ressource, aucune
+note, aucun média, bibliothèque vide, contenu introuvable) — point 33
+de la revue. Quatre existaient déjà, posés dans des tranches
+précédentes, vérifiés puis laissés tels quels : aucun résultat
+(« Aucun résultat. » sous la grille), aucune ressource (« Aucune
+ressource. » dans l'onglet Ressources), aucune note (aperçu Markdown
+d'une note vide : « Pas encore de note. »), aucun média (« Aucun
+média. » dans l'onglet Programme). Deux manquaient :
+
+- **Bibliothèque vide.** La barre recherche/filtres/tri s'affichait
+  même sans aucun contenu, et le message « Aucun résultat. » — pensé
+  pour une recherche infructueuse — s'affichait à tort pour une
+  bibliothèque jamais scannée. Toolbar et grille masquées entièrement
+  quand `items` est vide, remplacées par une phrase dédiée
+  (« Bibliothèque vide — aucun contenu n'a encore été scanné. »).
+- **Contenu introuvable.** Les 404 (fiche, vidéo, fichier inconnu)
+  renvoyaient la page Flask brute, hors de l'habillage de l'appli. Un
+  gestionnaire d'erreur global (`@app.errorhandler(404)`) rend
+  désormais `templates/not_found.html` (sidebar incluse) avec un lien
+  de retour vers la bibliothèque, pour toute 404 de l'appli.
+
+Deux tests ajoutés (bibliothèque vide, contenu de la page 404) —
+comportements nouveaux, non couverts par la suite existante.
+
+Vérifié à l'œil, `pytest tests/` (74 tests) au vert.
+
+### Traçabilité des métadonnées — partiellement implémentée
+
+Décidé avec Gautier au moment de la tranche 6 : **aucun champ de
+métadonnée sans source identifiée.** Une partie est faite, dans une
+tranche à part (entre la tranche 6 et la tranche 7, pas numérotée dans
+l'ordre de travail ci-dessus) :
+
+- `resolve_metadata_fields()` (studia.py) résout un seul champ par
+  concept bibliographique (Auteur/Formateur(s), Éditeur, Date de
+  publication, ISBN), avec une priorité claire : une fiche livre
+  validée l'emporte toujours sur la présentation locale, jamais
+  l'inverse. Chaque champ résolu porte une clé stable (`key`) en plus
+  de son libellé affiché — `extract_hero_fields()` s'appuie sur cette
+  clé plutôt que sur le texte du libellé, qui peut changer sans que le
+  hero s'en trouve affecté.
+- La provenance de chaque champ résolu est connue en interne
+  (`field["source"]`), mais n'est plus affichée dans la vue normale de
+  la fiche — jugée comme du bruit répété à côté de chaque fait. Elle
+  reste visible dans l'interface d'édition : « Provenance actuelle »
+  dans le modal « Modifier les métadonnées », « Provenance des
+  métadonnées » dans « Voir les informations techniques » —
+  uniquement pour un livre ou un audiobook avec une fiche validée. Une
+  formation n'affiche cette information nulle part aujourd'hui : sa
+  seule source possible est la présentation locale, implicite tant que
+  le moissonnage de plateformes n'existe pas.
 - Sources autorisées pour les livres et audiobooks : Google Books et
   Open Library, uniquement après validation d'un candidat par Gautier
-  (voir "Métadonnées de livres" ci-dessus, déjà le cas).
-- Sources autorisées pour les formations vidéo : tuto.com, elephorm,
-  udemy, LinkedIn Learning, etc. (moissonnage, voir backlog), le fichier
-  `000 - Presentation....html` livré avec la formation, les faits lus
-  par le scanner (durée, nombre de médias, chapitres), et une source
-  fournie explicitement par Gautier.
-- Saisie manuelle : autorisée dans tous les cas, toujours comme source
-  déclarée.
-- Un rescan ne doit jamais remplacer un champ dont la source n'est pas
-  le scanner.
-- Les fiches déjà en base seront reprises pour y inscrire la bonne
-  source, sans rien supprimer.
+  — déjà le cas depuis « Métadonnées de livres » ci-dessus.
+- Un rescan ne remplace jamais un champ dont la source n'est pas le
+  scanner : vrai par construction plutôt que par un mécanisme dédié —
+  `book_search`/`book_candidates` ne sont jamais touchées par
+  `scan_library` (voir plus haut), et les faits de présentation sont
+  relus depuis le fichier HTML à chaque affichage, jamais stockés donc
+  jamais écrasés.
+- Le correctif provisoire de la Tranche 6
+  (`filter_duplicated_presentation_facts()`) a disparu comme prévu,
+  remplacé par la résolution ci-dessus plutôt que par un masquage de
+  libellés.
 
-Le correctif provisoire de la Tranche 6 (`filter_duplicated_presentation_facts`)
-disparaîtra probablement à ce moment-là, remplacé par un vrai choix par
-source plutôt qu'un masquage de libellés.
+Reste au backlog, non commencé :
+- Sources pour les formations vidéo (tuto.com, Elephorm, Udemy,
+  LinkedIn Learning...) par moissonnage des plateformes commerciales.
+- Saisie manuelle générique pour les formations — aujourd'hui réservée
+  aux livres/audiobooks via le workflow `book_manual`, pas de
+  mécanisme équivalent pour un contenu de Gautier lui-même sans fiche
+  livre.
 
 ### Priorité des couvertures — ordre acté, pas encore implémenté
 
