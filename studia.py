@@ -21,7 +21,16 @@ from presentation import parse_presentation
 from book_metadata import default_query, find_isbn, search_candidates
 from covers import cover_cache_dir, cover_cache_path
 
+# Le module mimetypes ne connaît pas .m4b par défaut (contrairement à
+# .m4a, déjà mappé sur audio/mp4) : sans cet ajout, /media/<id>/file
+# servirait un livre audio sans Content-Type exploitable par <audio>.
+mimetypes.add_type("audio/mp4", ".m4b")
+
 BOOK_ITEM_TYPES = ("book", "audiobook")
+
+# Type de média suivi par la progression selon le type d'item - un
+# livre ou un document n'en ont aucun pour l'instant (pas de lecteur).
+TRACKED_PROGRESS_MEDIA_TYPE = {"course": "video", "audiobook": "audio"}
 
 BADGE_LABELS = {
     "course": "FORMATION",
@@ -209,12 +218,16 @@ def build_meta_line(*segments: str | None) -> str:
     return " · ".join(segment for segment in segments if segment)
 
 
-def fetch_video_media(conn, media_id: int):
-    """Media de type vidéo, avec le chemin de bibliothèque et le titre
-    de son item.
+def fetch_playable_media(conn, media_id: int):
+    """Media jouable (vidéo ou audio), avec le chemin de bibliothèque
+    et le titre de son item.
 
-    None si l'id n'existe pas ou si ce n'est pas une vidéo : cette
-    fonction sert de garde commune aux deux routes vidéo.
+    None si l'id n'existe pas ou si ce n'est ni une vidéo ni un audio
+    (ex. un livre, media_type 'book', pas encore de lecteur) : cette
+    fonction sert de garde commune à /watch, /listen, au service de
+    fichier et à l'écriture de la progression. Chaque route vérifie en
+    plus son propre media_type (une vidéo ne s'ouvre pas via /listen,
+    et inversement).
     """
 
     return conn.execute(
@@ -223,13 +236,14 @@ def fetch_video_media(conn, media_id: int):
             media.id,
             media.item_id,
             media.relative_path,
+            media.media_type,
             media.extension,
             media.duration_seconds,
             items.title AS item_title,
             items.library_path
         FROM media
         JOIN items ON items.id = media.item_id
-        WHERE media.id = ? AND media.media_type = 'video'
+        WHERE media.id = ? AND media.media_type IN ('video', 'audio')
         """,
         (media_id,),
     ).fetchone()
@@ -312,24 +326,29 @@ def resolve_resume_seconds(progress_row) -> int | None:
     return int(progress_row["position_seconds"])
 
 
-def resolve_watch_target_video_id(
-    video_ids: list[int], completed_ids: set[int]
+def resolve_watch_target_media_id(
+    media_ids: list[int], completed_ids: set[int]
 ) -> int | None:
-    """Cible du bouton "Regarder" : la première vidéo non terminée
-    dans l'ordre du programme ; si toutes le sont, la première vidéo
-    de l'item (la rouvrir, c'est vouloir la revoir depuis le début -
-    même règle que resolve_resume_seconds). None si l'item n'a aucune
-    vidéo.
+    """Cible du bouton hero ("Regarder"/"Écouter") : le premier média
+    non terminé dans l'ordre du programme ; si tous le sont, le
+    premier média de l'item (le rouvrir, c'est vouloir le revoir depuis
+    le début - même règle que resolve_resume_seconds). None si l'item
+    n'a aucun média suivi.
+
+    Générique au type (vidéos d'une formation, ou l'unique fichier
+    audio d'un audiobook) : sur une liste à un seul élément, renvoie
+    cet élément dans les deux cas (terminé ou non), donc pas de
+    changement de comportement pour un audiobook selon son état.
     """
 
-    if not video_ids:
+    if not media_ids:
         return None
 
-    for video_id in video_ids:
-        if video_id not in completed_ids:
-            return video_id
+    for media_id in media_ids:
+        if media_id not in completed_ids:
+            return media_id
 
-    return video_ids[0]
+    return media_ids[0]
 
 
 def aggregate_item_progress(media_progress: list[tuple[bool, bool]]) -> str:
@@ -377,45 +396,106 @@ def fetch_item_progress_status(conn, item_id: int) -> str:
     )
 
 
-def fetch_item_video_progress(conn, item_id: int) -> dict:
-    """Statut ('not_started'/'in_progress'/'completed', voir
-    aggregate_item_progress) et pourcentage d'un item, à partir de ses
-    vidéos uniquement - seul type suivi pour l'instant, un livre ou un
-    audiobook n'a donc jamais de ligne ici.
+def compute_item_progress_percent(item_type: str, media_progress: list[dict]) -> int:
+    """Pourcentage affiché sur la carte de la grille - une règle par
+    type, pas une seule règle tordue pour les deux :
 
-    "percent" est le nombre de vidéos terminées sur le nombre total de
-    vidéos, jamais les secondes vues sur la durée totale : ça
-    bougerait en permanence sans jamais correspondre exactement à la
-    coche "terminé" d'une vidéo précise.
+    - formation (course) : médias terminés / total de médias suivis.
+      Jamais les secondes vues sur la durée totale : sur plusieurs
+      vidéos, ça bougerait en permanence sans jamais correspondre
+      exactement à la coche "terminé" d'une vidéo précise.
+    - audiobook : position / durée du fichier unique, en continu.
+      L'objection ci-dessus ne s'applique pas ici : il n'y a qu'un
+      seul fichier, donc aucune coche intermédiaire à faire
+      correspondre à un pourcentage qui bougerait "trop tôt".
+
+    media_progress : une entrée par média suivi de l'item, chacune
+    {"completed": bool, "position_seconds": float | None,
+    "duration_seconds": float | None}.
     """
+
+    if not media_progress:
+        return 0
+
+    if item_type == "audiobook":
+        total_duration = sum(m["duration_seconds"] or 0 for m in media_progress)
+        if not total_duration:
+            return 0
+
+        total_position = sum(
+            (
+                m["duration_seconds"] or 0
+                if m["completed"]
+                else min(m["position_seconds"] or 0, m["duration_seconds"] or 0)
+            )
+            for m in media_progress
+        )
+        return round(min(total_position / total_duration, 1.0) * 100)
+
+    total = len(media_progress)
+    completed_count = sum(1 for m in media_progress if m["completed"])
+    return round(completed_count / total * 100)
+
+
+def fetch_item_media_progress(conn, item_id: int, item_type: str) -> dict:
+    """Statut ('not_started'/'in_progress'/'completed', voir
+    aggregate_item_progress) et pourcentage (voir
+    compute_item_progress_percent) d'un item, à partir du media_type
+    suivi pour son item_type (TRACKED_PROGRESS_MEDIA_TYPE) - un livre
+    ou un document n'ont encore aucune ligne ici, faute de lecteur.
+    """
+
+    media_type = TRACKED_PROGRESS_MEDIA_TYPE.get(item_type)
+    if media_type is None:
+        return {"status": "not_started", "percent": 0}
 
     rows = conn.execute(
         """
         SELECT
             progress.completed IS NOT NULL AS has_progress,
-            COALESCE(progress.completed, 0) AS completed
+            COALESCE(progress.completed, 0) AS completed,
+            progress.position_seconds AS position_seconds,
+            media.duration_seconds AS duration_seconds
         FROM media
         LEFT JOIN progress
             ON progress.media_id = media.id AND progress.user_id = ?
-        WHERE media.item_id = ? AND media.media_type = 'video'
+        WHERE media.item_id = ? AND media.media_type = ?
         """,
-        (LOCAL_USER_ID, item_id),
+        (LOCAL_USER_ID, item_id, media_type),
     ).fetchall()
 
-    total = len(rows)
-    completed_count = sum(1 for row in rows if row["completed"])
     status = aggregate_item_progress(
         [(bool(row["has_progress"]), bool(row["completed"])) for row in rows]
     )
-    percent = round(completed_count / total * 100) if total else 0
+    percent = compute_item_progress_percent(
+        item_type,
+        [
+            {
+                "completed": bool(row["completed"]),
+                "position_seconds": row["position_seconds"],
+                "duration_seconds": row["duration_seconds"],
+            }
+            for row in rows
+        ],
+    )
 
     return {"status": status, "percent": percent}
 
 
-def fetch_video_progress_states(conn, item_id: int) -> dict[int, str]:
-    """media_id -> 'in_progress' ou 'completed' pour chaque vidéo de
-    l'item ayant une ligne progress ; absente du dict sinon (non
-    commencée - état par défaut, rien à afficher)."""
+def fetch_media_progress_states(
+    conn, item_id: int, media_type: str | None
+) -> dict[int, str]:
+    """media_id -> 'in_progress' ou 'completed' pour chaque média suivi
+    de l'item ayant une ligne progress ; absent du dict sinon (non
+    commencé - état par défaut, rien à afficher).
+
+    media_type est le type suivi pour cet item (voir
+    TRACKED_PROGRESS_MEDIA_TYPE) ; None (livre, document) renvoie un
+    dict vide sans requête.
+    """
+
+    if media_type is None:
+        return {}
 
     rows = conn.execute(
         """
@@ -423,15 +503,29 @@ def fetch_video_progress_states(conn, item_id: int) -> dict[int, str]:
         FROM media
         JOIN progress
             ON progress.media_id = media.id AND progress.user_id = ?
-        WHERE media.item_id = ? AND media.media_type = 'video'
+        WHERE media.item_id = ? AND media.media_type = ?
         """,
-        (LOCAL_USER_ID, item_id),
+        (LOCAL_USER_ID, item_id, media_type),
     ).fetchall()
 
     return {
         row["id"]: ("completed" if row["completed"] else "in_progress")
         for row in rows
     }
+
+
+def resolve_hero_cta(item_type: str, progress_status: str) -> tuple[str, str]:
+    """Verbe et endpoint du bouton principal du hero, selon le type
+    d'item et son statut de progression - vocabulaire déjà réservé
+    (Regarder, Lire, Écouter, Reprendre : voir CLAUDE.md, tranche
+    "restructuration visuelle des métadonnées")."""
+
+    if item_type == "audiobook":
+        verb = "Reprendre" if progress_status == "in_progress" else "Écouter"
+        return verb, "listen_audio"
+
+    verb = "Reprendre" if progress_status == "in_progress" else "Regarder"
+    return verb, "watch_video"
 
 
 def fetch_video_playlist(conn, item_id: int):
@@ -1067,9 +1161,11 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                     describe_count(item["chapter_count"], "chapitres"),
                 )
                 item["author"] = fetch_item_author(library_root, conn, item)
-                video_progress = fetch_item_video_progress(conn, item["id"])
-                item["progress_status"] = video_progress["status"]
-                item["progress_percent"] = video_progress["percent"]
+                media_progress = fetch_item_media_progress(
+                    conn, item["id"], item["item_type"]
+                )
+                item["progress_status"] = media_progress["status"]
+                item["progress_percent"] = media_progress["percent"]
                 type_counts[item["item_type"]] = type_counts.get(item["item_type"], 0) + 1
                 items.append(item)
         finally:
@@ -1133,7 +1229,10 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                 (item_id,),
             ).fetchall()
 
-            progress_states = fetch_video_progress_states(conn, item_id)
+            tracked_media_type = TRACKED_PROGRESS_MEDIA_TYPE.get(item["item_type"])
+            progress_states = fetch_media_progress_states(
+                conn, item_id, tracked_media_type
+            )
         finally:
             conn.close()
 
@@ -1145,18 +1244,25 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
 
         chapters = build_programme_chapters(media_rows)
 
-        video_ids = [m["id"] for m in media_rows if m["media_type"] == "video"]
-        completed_video_ids = {
+        playable_ids = [
+            m["id"] for m in media_rows if m["media_type"] == tracked_media_type
+        ]
+        completed_ids = {
             media_id
             for media_id, state in progress_states.items()
             if state == "completed"
         }
-        first_video_id = resolve_watch_target_video_id(video_ids, completed_video_ids)
+        first_playable_media_id = resolve_watch_target_media_id(
+            playable_ids, completed_ids
+        )
         progress_status = aggregate_item_progress(
             [
-                (video_id in progress_states, video_id in completed_video_ids)
-                for video_id in video_ids
+                (media_id in progress_states, media_id in completed_ids)
+                for media_id in playable_ids
             ]
+        )
+        watch_label, watch_endpoint = resolve_hero_cta(
+            item["item_type"], progress_status
         )
 
         total_duration = sum(m["duration_seconds"] or 0 for m in media_rows)
@@ -1226,7 +1332,9 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             book_source_labels=BOOK_SOURCE_LABELS,
             hero=hero,
             hero_meta=hero_meta,
-            first_video_id=first_video_id,
+            first_playable_media_id=first_playable_media_id,
+            watch_label=watch_label,
+            watch_endpoint=watch_endpoint,
             progress_status=progress_status,
             progress_states=progress_states,
             total_duration=total_duration,
@@ -1426,14 +1534,16 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         conn = connect_database(app.config["DB_PATH"])
 
         try:
-            media = fetch_video_media(conn, media_id)
+            media = fetch_playable_media(conn, media_id)
 
-            if media is None:
+            if media is None or media["media_type"] != "video":
                 abort(404)
 
             playlist = fetch_video_playlist(conn, media["item_id"])
             stored_progress = fetch_media_progress(conn, media_id)
-            progress_states = fetch_video_progress_states(conn, media["item_id"])
+            progress_states = fetch_media_progress_states(
+                conn, media["item_id"], "video"
+            )
         finally:
             conn.close()
 
@@ -1475,8 +1585,53 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             note_text=note["text"] if note else "",
             note_updated_at=note["updated_at"] if note else None,
             player_context={
+                "kind": "video",
                 "number": position + 1,
                 "title": video_title,
+                "media_id": media_id,
+            },
+            clean_file_title=clean_file_title,
+            format_duration=format_duration,
+        )
+
+    @app.route("/listen/<int:media_id>")
+    def listen_audio(media_id: int):
+        conn = connect_database(app.config["DB_PATH"])
+
+        try:
+            media = fetch_playable_media(conn, media_id)
+
+            if media is None or media["media_type"] != "audio":
+                abort(404)
+
+            stored_progress = fetch_media_progress(conn, media_id)
+        finally:
+            conn.close()
+
+        conn = connect_database(app.config["DB_PATH"])
+        try:
+            note = fetch_note(conn, media["library_path"])
+        finally:
+            conn.close()
+
+        filename = media["relative_path"].rsplit("/", 1)[-1]
+        audio_title = clean_file_title(filename)
+
+        # Même règle que /watch : un repère explicite (?t=) l'emporte
+        # toujours sur la reprise automatique.
+        seek_seconds = request.args.get("t", type=int)
+        if seek_seconds is None:
+            seek_seconds = resolve_resume_seconds(stored_progress)
+
+        return render_template(
+            "audio_player.html",
+            media=media,
+            seek_seconds=seek_seconds,
+            note_text=note["text"] if note else "",
+            note_updated_at=note["updated_at"] if note else None,
+            player_context={
+                "kind": "audio",
+                "title": audio_title,
                 "media_id": media_id,
             },
             clean_file_title=clean_file_title,
@@ -1488,7 +1643,7 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         conn = connect_database(app.config["DB_PATH"])
 
         try:
-            media = fetch_video_media(conn, media_id)
+            media = fetch_playable_media(conn, media_id)
         finally:
             conn.close()
 
@@ -1517,7 +1672,7 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         conn = connect_database(app.config["DB_PATH"])
 
         try:
-            media = fetch_video_media(conn, media_id)
+            media = fetch_playable_media(conn, media_id)
 
             if media is None:
                 abort(404)

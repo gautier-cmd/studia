@@ -2,7 +2,7 @@
 
 Règles métier testées d'abord isolément (is_video_completed,
 aggregate_item_progress, resolve_resume_seconds,
-resolve_watch_target_video_id), puis via les routes qui les utilisent
+resolve_watch_target_media_id), puis via les routes qui les utilisent
 (POST /media/<id>/progress, reprise sur GET /watch/<id>, bouton
 "Regarder" sur /item/<id>).
 
@@ -26,11 +26,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from library_index import scan_library  # noqa: E402
 from studia import (  # noqa: E402
     aggregate_item_progress,
+    compute_item_progress_percent,
     create_app,
-    fetch_item_video_progress,
+    fetch_item_media_progress,
     is_video_completed,
+    resolve_hero_cta,
     resolve_resume_seconds,
-    resolve_watch_target_video_id,
+    resolve_watch_target_media_id,
 )
 
 
@@ -101,23 +103,23 @@ def test_resume_sans_position_enregistree() -> None:
     assert resolve_resume_seconds({"completed": 0, "position_seconds": None}) is None
 
 
-# --- resolve_watch_target_video_id : cible du bouton "Regarder" --------
+# --- resolve_watch_target_media_id : cible du bouton "Regarder" --------
 
 
 def test_cible_regarder_aucune_video() -> None:
-    assert resolve_watch_target_video_id([], set()) is None
+    assert resolve_watch_target_media_id([], set()) is None
 
 
 def test_cible_regarder_rien_de_commence_prend_la_premiere() -> None:
-    assert resolve_watch_target_video_id([1, 2, 3], set()) == 1
+    assert resolve_watch_target_media_id([1, 2, 3], set()) == 1
 
 
 def test_cible_regarder_premiere_video_non_terminee() -> None:
-    assert resolve_watch_target_video_id([1, 2, 3], {1}) == 2
+    assert resolve_watch_target_media_id([1, 2, 3], {1}) == 2
 
 
 def test_cible_regarder_tout_termine_revient_a_la_premiere() -> None:
-    assert resolve_watch_target_video_id([1, 2, 3], {1, 2, 3}) == 1
+    assert resolve_watch_target_media_id([1, 2, 3], {1, 2, 3}) == 1
 
 
 # --- Routes : écriture, reprise ----------------------------------------
@@ -130,6 +132,16 @@ def library(tmp_path: Path) -> Path:
     course = root / "Motion Design - la formation complete (TUTO.com)"
     make_file(course / "01 - Bases" / "001 - Interface.mp4")
     make_file(course / "01 - Bases" / "002 - Calques.mp4")
+
+    # Fichier unique a la racine, comme un vrai M4B - pas de sous-dossier,
+    # donc pas de "chapitre" au sens de build_programme_chapters.
+    audiobook = root / "S organiser pour reussir (David Allen)"
+    make_file(audiobook / "livre-audio.m4b")
+
+    # Un PDF seul (sans video ni audio) devient media_type 'book' :
+    # aucun lecteur pour ce type, message "format illisible" attendu.
+    book = root / "Adobe Illustrator CS6 (Adobe Press)"
+    make_file(book / "livre.pdf")
 
     # Aucune extension video/audio/book : item_type "document", donc
     # zero ligne dans `media` - le cas vise par la garde de vacuite.
@@ -409,7 +421,7 @@ def test_enchainement_automatique_garde_fou_present(client) -> None:
     assert "window.location.href" in data
 
 
-# --- fetch_item_video_progress : statut + pourcentage d'un item -------
+# --- fetch_item_media_progress : statut + pourcentage d'un item -------
 
 
 def test_progression_item_rien_commence(client) -> None:
@@ -421,7 +433,7 @@ def test_progression_item_rien_commence(client) -> None:
     conn.row_factory = sqlite3.Row
 
     try:
-        result = fetch_item_video_progress(conn, item_id)
+        result = fetch_item_media_progress(conn, item_id, "course")
     finally:
         conn.close()
 
@@ -441,7 +453,7 @@ def test_progression_item_une_video_sur_deux_terminee(client) -> None:
     conn.row_factory = sqlite3.Row
 
     try:
-        result = fetch_item_video_progress(conn, item_id)
+        result = fetch_item_media_progress(conn, item_id, "course")
     finally:
         conn.close()
 
@@ -464,7 +476,7 @@ def test_progression_item_toutes_les_videos_terminees(client) -> None:
     conn.row_factory = sqlite3.Row
 
     try:
-        result = fetch_item_video_progress(conn, item_id)
+        result = fetch_item_media_progress(conn, item_id, "course")
     finally:
         conn.close()
 
@@ -665,3 +677,232 @@ def test_menu_remise_a_zero_present_avec_progression(client) -> None:
     response = client.get(f"/item/{item_id}")
 
     assert "dialog-reset-progress" in response.data.decode()
+
+
+# --- compute_item_progress_percent : une règle par type -------------------
+#
+# La carte de la grille affiche un pourcentage calculé différemment
+# selon item_type : médias terminés / total pour une formation
+# (jamais les secondes vues, qui ne correspondraient à aucune coche
+# précise sur plusieurs vidéos) ; position / durée en continu pour un
+# audiobook (un seul fichier, donc aucune coche intermédiaire à
+# respecter - l'objection ci-dessus ne s'applique pas ici).
+
+
+def test_pourcentage_course_est_discret_medias_termines_sur_total() -> None:
+    media_progress = [
+        {"completed": True, "position_seconds": 99.0, "duration_seconds": 100.0},
+        {"completed": False, "position_seconds": 10.0, "duration_seconds": 100.0},
+    ]
+    assert compute_item_progress_percent("course", media_progress) == 50
+
+
+def test_pourcentage_course_ignore_la_position_en_cours() -> None:
+    # Une vidéo à 99% de sa durée mais pas encore cochée "terminé" ne
+    # doit rien ajouter au pourcentage d'une formation - seule la
+    # coche compte, jamais la position brute.
+    media_progress = [
+        {"completed": False, "position_seconds": 99.0, "duration_seconds": 100.0},
+    ]
+    assert compute_item_progress_percent("course", media_progress) == 0
+
+
+def test_pourcentage_audiobook_est_continu_position_sur_duree() -> None:
+    media_progress = [
+        {"completed": False, "position_seconds": 4320.0, "duration_seconds": 10800.0},
+    ]
+    assert compute_item_progress_percent("audiobook", media_progress) == 40
+
+
+def test_pourcentage_audiobook_termine_vaut_100_meme_sous_la_marge() -> None:
+    # is_video_completed coche "terminé" avant la toute dernière
+    # seconde (marge plafonnée à 15s) : le pourcentage affiché doit
+    # malgré tout valoir 100 une fois la coche posée, pas 99,86.
+    media_progress = [
+        {"completed": True, "position_seconds": 10785.0, "duration_seconds": 10800.0},
+    ]
+    assert compute_item_progress_percent("audiobook", media_progress) == 100
+
+
+def test_pourcentage_audiobook_sans_position_enregistree_zero() -> None:
+    media_progress = [
+        {"completed": False, "position_seconds": None, "duration_seconds": 10800.0},
+    ]
+    assert compute_item_progress_percent("audiobook", media_progress) == 0
+
+
+def test_pourcentage_sans_media_suivi_zero_quel_que_soit_le_type() -> None:
+    assert compute_item_progress_percent("course", []) == 0
+    assert compute_item_progress_percent("audiobook", []) == 0
+
+
+# --- resolve_hero_cta : verbe et endpoint du bouton hero -------------------
+
+
+def test_hero_cta_course_regarder_puis_reprendre() -> None:
+    assert resolve_hero_cta("course", "not_started") == ("Regarder", "watch_video")
+    assert resolve_hero_cta("course", "in_progress") == ("Reprendre", "watch_video")
+    assert resolve_hero_cta("course", "completed") == ("Regarder", "watch_video")
+
+
+def test_hero_cta_audiobook_ecouter_puis_reprendre() -> None:
+    assert resolve_hero_cta("audiobook", "not_started") == ("Écouter", "listen_audio")
+    assert resolve_hero_cta("audiobook", "in_progress") == ("Reprendre", "listen_audio")
+    assert resolve_hero_cta("audiobook", "completed") == ("Écouter", "listen_audio")
+
+
+# --- Audiobook : progression, lecteur, bouton hero ------------------------
+
+
+def test_fetch_item_media_progress_audiobook_continu(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_duration(client, media_id, 10800.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "4320"})
+
+    item_id = item_id_by_title(client, "S organiser pour reussir (David Allen)")
+    db_path = client.application.config["DB_PATH"]
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    try:
+        result = fetch_item_media_progress(conn, item_id, "audiobook")
+    finally:
+        conn.close()
+
+    assert result == {"status": "in_progress", "percent": 40}
+
+
+def test_carte_audiobook_pourcentage_continu(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_duration(client, media_id, 10800.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "4320"})
+
+    response = client.get("/")
+    data = response.data.decode()
+
+    assert 'class="card-progress"' in data
+    assert "width: 40%;" in data
+    assert "40 %" in data
+
+
+def test_route_listen_rend_le_lecteur_audio(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+
+    response = client.get(f"/listen/{media_id}")
+    data = response.data.decode()
+
+    assert response.status_code == 200
+    assert "<audio" in data
+    assert f'src="/media/{media_id}/file"' in data
+    # Fichier unique : pas de playlist ni de précédent/suivant, à la
+    # différence du lecteur vidéo.
+    assert "nav-buttons" not in data
+    assert 'id="playlist"' not in data
+
+
+def test_route_listen_refuse_une_video(client) -> None:
+    video_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+
+    response = client.get(f"/listen/{video_id}")
+
+    assert response.status_code == 404
+
+
+def test_route_watch_refuse_un_audio(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+
+    response = client.get(f"/watch/{media_id}")
+
+    assert response.status_code == 404
+
+
+def test_media_file_m4b_a_un_content_type_audio(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+
+    response = client.get(f"/media/{media_id}/file")
+
+    assert response.status_code == 200
+    assert response.headers["Content-Type"].startswith("audio/")
+
+
+def test_reprise_fonctionne_pour_un_audiobook(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_duration(client, media_id, 10800.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "37"})
+
+    response = client.get(f"/listen/{media_id}")
+
+    assert response.status_code == 200
+    assert b"player.currentTime = 37;" in response.data
+
+
+def test_repere_audio_construit_avec_la_route_listen(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+
+    response = client.get(f"/listen/{media_id}")
+    data = response.data.decode()
+
+    assert f"(/listen/{media_id}?t=" in data
+    # Pas de "Vidéo N" pour un fichier unique - contrairement au
+    # lecteur vidéo (voir video_player.html).
+    assert "'Vidéo " not in data
+
+
+def test_marker_pattern_reconnait_watch_et_listen(client) -> None:
+    # Non-régression sur le gabarit rendu (même principe que le
+    # garde-fou "played", voir plus haut) : le motif qui détecte un
+    # repère dans la note doit accepter les deux préfixes de route.
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert "\\/(?:watch|listen)\\/" in data
+
+
+def test_bouton_hero_ecouter_audiobook_jamais_commence(client) -> None:
+    item_id = item_id_by_title(client, "S organiser pour reussir (David Allen)")
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert "▶ Écouter" in data
+    assert "▶ Reprendre" not in data
+
+
+def test_bouton_hero_reprendre_audiobook_en_cours(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_duration(client, media_id, 10800.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "4320"})
+
+    item_id = item_id_by_title(client, "S organiser pour reussir (David Allen)")
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert "▶ Reprendre" in data
+
+
+def test_message_format_illisible_absent_pour_audiobook(client) -> None:
+    item_id = item_id_by_title(client, "S organiser pour reussir (David Allen)")
+    response = client.get(f"/item/{item_id}")
+
+    assert "ne peut pas encore être lu" not in response.data.decode()
+
+
+def test_message_format_illisible_present_pour_un_livre(client) -> None:
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    response = client.get(f"/item/{item_id}")
+
+    assert "ne peut pas encore être lu" in response.data.decode()
+
+
+def test_remise_a_zero_efface_aussi_la_progression_audio(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_duration(client, media_id, 10800.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "4320"})
+
+    item_id = item_id_by_title(client, "S organiser pour reussir (David Allen)")
+    response = client.post(f"/item/{item_id}/reset-progress")
+
+    assert response.status_code in (302, 303)
+    assert fetch_progress_row(client, media_id) is None

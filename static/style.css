@@ -1476,6 +1476,11 @@ video {
     background: #000;
 }
 
+audio {
+    width: 100%;
+    display: block;
+}
+
 .nav-buttons {
     display: flex;
     justify-content: space-between;

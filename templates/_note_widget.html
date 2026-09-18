@@ -55,12 +55,13 @@
         return date.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'});
     }
 
-    // Un repère est une ligne "texte (/watch/id?t=secondes)" : le
-    // fragment entre parenthèses sert à repositionner le lecteur, ce
-    // n'est pas une information à montrer telle quelle (liste, aperçu,
+    // Un repère est une ligne "texte (/watch/id?t=secondes)" ou
+    // "texte (/listen/id?t=secondes)" selon le lecteur : le fragment
+    // entre parenthèses sert à repositionner le lecteur, ce n'est pas
+    // une information à montrer telle quelle (liste, aperçu,
     // impression) — seule la zone de saisie, en texte brut, le laisse
     // forcément visible.
-    var MARKER_PATTERN = /^(.*)\((\/watch\/\d+\?t=\d+)\)\s*$/;
+    var MARKER_PATTERN = /^(.*)\((\/(?:watch|listen)\/\d+\?t=\d+)\)\s*$/;
 
     function markerLineRegex() {
         return new RegExp(MARKER_PATTERN.source, 'gm');
@@ -576,8 +577,14 @@
         var minutes = Math.floor(seconds / 60);
         var remaining = String(seconds % 60).padStart(2, '0');
         var timestamp = minutes + ':' + remaining;
+        {% if player_context.kind == 'audio' %}
+        // Un audiobook n'a qu'un seul fichier : ni numéro de vidéo ni
+        // titre à répéter, le repère se suffit de l'horodatage.
+        var marker = timestamp + ' (/listen/{{ player_context.media_id }}?t=' + seconds + ')\n';
+        {% else %}
         var marker = 'Vidéo {{ player_context.number }} — {{ player_context.title }} — '
             + timestamp + ' (/watch/{{ player_context.media_id }}?t=' + seconds + ')\n';
+        {% endif %}
 
         var position = textarea.selectionStart;
         if (typeof position !== 'number') {

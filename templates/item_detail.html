@@ -35,6 +35,8 @@
 <div class="file-row">
     {% if media['media_type'] == 'video' %}
     <a class="file-title" href="{{ url_for('watch_video', media_id=media['id']) }}" title="{{ filename }}">{{ clean_file_title(filename) }}</a>
+    {% elif media['media_type'] == 'audio' %}
+    <a class="file-title" href="{{ url_for('listen_audio', media_id=media['id']) }}" title="{{ filename }}">{{ clean_file_title(filename) }}</a>
     {% else %}
     <span class="file-title" title="{{ filename }}">{{ clean_file_title(filename) }}</span>
     {% endif %}
@@ -75,10 +77,8 @@
             {% endif %}
 
             <div class="hero-actions">
-                {% if first_video_id %}
-                <a class="btn-primary" href="{{ url_for('watch_video', media_id=first_video_id) }}">
-                    {% if progress_status == 'in_progress' %}▶ Reprendre{% else %}▶ Regarder{% endif %}
-                </a>
+                {% if first_playable_media_id %}
+                <a class="btn-primary" href="{{ url_for(watch_endpoint, media_id=first_playable_media_id) }}">▶ {{ watch_label }}</a>
                 {% if resources %}
                 <button type="button" class="btn-secondary" data-tab-target="ressources">Voir les ressources</button>
                 {% endif %}
@@ -100,7 +100,7 @@
                     </div>
                 </details>
             </div>
-            {% if not first_video_id and item['item_type'] in ('book', 'audiobook') %}
+            {% if not first_playable_media_id and item['item_type'] == 'book' %}
             <p class="hint">Ce format ne peut pas encore être lu dans l'application.</p>
             {% endif %}
         </div>

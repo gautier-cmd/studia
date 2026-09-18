@@ -893,14 +893,21 @@ incompatibles avec le modèle. Le CSS des templates existants est
 réutilisable comme point de départ.
 
 Lecteurs prévus, dans cet ordre : vidéo (fait), sauvegarde de la
-position de lecture (fait, voir ci-dessous), audio/M4B avec
-chapitres, PDF (PDF.js), EPUB. La
+position de lecture (fait, voir ci-dessous), audio/M4B (fait, voir
+ci-dessous), PDF (PDF.js), EPUB. La
 progression vient juste après la vidéo parce qu'elle ne se pose
 qu'une fois et sert ensuite à tous les lecteurs suivants, plutôt que
 d'être refaite à chacun. Le M4B reste avant le PDF : il partage la
 même mécanique de position (en secondes) que la vidéo, déjà posée,
 alors que le PDF progresse par page et suppose d'abord de connaître
 le nombre de pages — pas encore lu au scan (voir backlog).
+
+Les chapitres internes du M4B (repères ffprobe -show_chapters à
+l'intérieur du fichier, distincts des chapitres par sous-dossier) ne
+font pas partie de cette tranche : décidé avec Gautier, pour ne pas
+mêler un chantier de lecteur à un chantier de scanner qui demanderait
+une nouvelle table. Ligne de backlog inchangée, tranche suivante une
+fois celle-ci validée.
 
 Progression selon le type : secondes pour vidéo et audio, page pour PDF,
 position pour EPUB.
@@ -983,6 +990,87 @@ enchaînement normal préservé sur une vidéo qui se termine réellement,
 vidéo terminée qui repart du début.
 
 `pytest tests/` (106 tests) au vert.
+
+### Lecteur audio M4B (fait)
+
+Route dédiée `/listen/<media_id>` (studia.py, `listen_audio`), gabarit
+séparé `templates/audio_player.html` — délibérément pas une
+réutilisation de `/watch` : un audiobook est un fichier unique, sans
+playlist ni précédent/suivant à afficher, et le texte du repère de
+note (voir plus bas) doit lui être propre. `<audio controls
+autoplay>`, contrôles natifs du navigateur uniquement — pas de barre
+de transport maison, pas de bouton ±15 s, pas de réglage de vitesse
+ajouté à la main (déjà exposé nativement par Chrome sur `<audio
+controls>`) : même sobriété que le lecteur vidéo.
+
+Les chapitres internes du M4B restent hors de cette tranche (voir
+"Objectif suivant" ci-dessus et le backlog) : décidé avec Gautier pour
+ne pas mêler un chantier de lecteur à un chantier de scanner qui
+demanderait une nouvelle table.
+
+**Progression, réutilisée à l'identique.** Les règles qui ne
+filtraient déjà pas par type de média (`fetch_media_progress`,
+`save_video_progress`, `is_video_completed`, `resolve_resume_seconds`)
+s'appliquent à l'audio sans aucun changement — même seuil du
+"terminé", même reprise, même coche définitive. Ce qui filtrait sur
+`media_type = 'video'` a été élargi, piloté par
+`TRACKED_PROGRESS_MEDIA_TYPE` (`course` -> `video`, `audiobook` ->
+`audio`) :
+
+    fetch_item_video_progress    -> fetch_item_media_progress(conn, item_id, item_type)
+    fetch_video_progress_states  -> fetch_media_progress_states(conn, item_id, media_type)
+    resolve_watch_target_video_id -> resolve_watch_target_media_id
+    fetch_video_media            -> fetch_playable_media (filtre élargi à video+audio)
+
+`/watch` et `/listen` gardent chacune leur propre garde de type (une
+vidéo ne s'ouvre pas via `/listen`, et inversement) ; `/media/<id>/file`
+et `/media/<id>/progress` acceptent les deux, puisqu'ils ne servent
+jamais un livre (pas encore de lecteur pour `media_type = 'book'`).
+
+**Pourcentage de la carte grille : deux règles, pas une seule tordue
+pour les deux** (`compute_item_progress_percent`, décidé avec
+Gautier) :
+- formation : médias terminés / total de médias — inchangé, toujours
+  pas les secondes vues sur la durée totale (ne correspondrait à
+  aucune coche "terminé" précise sur plusieurs vidéos).
+- audiobook : position / durée du fichier unique, en continu. L'objection
+  qui avait fait écarter ce calcul pour la vidéo ne s'applique pas ici :
+  un seul fichier, donc aucune coche intermédiaire à respecter. Un
+  livre audio à 40 % affiche 40 %, pas 0 ou 100 par paliers.
+
+**Bouton hero et message.** `resolve_hero_cta(item_type,
+progress_status)` renvoie le verbe (Regarder/Écouter/Reprendre —
+vocabulaire déjà réservé, voir la tranche 6) et l'endpoint
+(`watch_video`/`listen_audio`). `first_video_id` devient
+`first_playable_media_id`, générique au type. Le message "Ce format ne
+peut pas encore être lu dans l'application." se resserre sur
+`item_type == 'book'` seul.
+
+**Repère de note.** Le motif reconnu (`MARKER_PATTERN`,
+_note_widget.html) accepte `/watch/id?t=secondes` et
+`/listen/id?t=secondes`. Sur l'audiobook, le texte inséré n'a ni
+numéro ni titre à répéter (un seul fichier) : juste l'horodatage et le
+lien, contrairement au "Vidéo N — titre — mm:ss" du lecteur vidéo.
+
+**Correctif trouvé en cours de route.** Le module `mimetypes` de
+Python ne connaît pas `.m4b` par défaut (contrairement à `.m4a`,
+mappé sur `audio/mp4`) : sans `mimetypes.add_type("audio/mp4",
+".m4b")`, `/media/<id>/file` servait un livre audio sans Content-Type
+exploitable par `<audio>`. Vérifié directement en HTTP (curl, requête
+Range) sur le fichier réel de la bibliothèque de test : réponse 206,
+`Content-Type: audio/mp4`, `Accept-Ranges: bytes` corrects.
+
+Vérifié à l'œil sur "S organiser pour reussir" (fiche et lecteur) et
+sur "Adobe Illustrator CS6" (message resserré). Limite de vérification
+rencontrée et non levée : dans cet environnement de navigateur
+automatisé, l'élément `<audio>` (et, vérifié en comparaison, l'élément
+`<video>` existant aussi) ne déclenche aucune requête réseau vers
+`/media/<id>/file`, même après un appel explicite à `player.load()` —
+le serveur ne reçoit rien. Le contrat serveur (Content-Type, Range) est
+lui confirmé indépendamment par curl et par pytest ; la lecture audio
+réelle dans un navigateur reste à confirmer par Gautier lui-même.
+
+`pytest tests/` (145 tests) au vert.
 
 ## Méthode — backlog
 

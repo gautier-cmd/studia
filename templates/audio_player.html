@@ -1,0 +1,95 @@
+{% extends "_base.html" %}
+{% from "_note_widget.html" import render_note, render_print_block %}
+
+{% block title %}{{ clean_file_title(media['relative_path'].rsplit('/', 1)[-1]) }} - Studia{% endblock %}
+
+{% block body_class %}page-player{% endblock %}
+
+{% block active_nav %}library{% endblock %}
+
+{% block content %}
+<div class="layout">
+    <div class="main">
+        <a class="back" href="{{ url_for('item_detail', item_id=media['item_id']) }}">← {{ media['item_title'] }}</a>
+        <h1>{{ clean_file_title(media['relative_path'].rsplit('/', 1)[-1]) }}</h1>
+        <audio id="player" controls autoplay src="{{ url_for('media_file', media_id=media['id']) }}"></audio>
+
+        {{ render_note(media['item_id'], note_text, note_updated_at, player_context=player_context) }}
+    </div>
+</div>
+{% endblock %}
+
+{% block print %}{{ render_print_block(media['item_title']) }}{% endblock %}
+
+{% block scripts %}
+<script>
+    (function () {
+        var player = document.getElementById('player');
+        if (!player) {
+            return;
+        }
+
+        var mediaId = {{ media['id'] | tojson }};
+        var saveTimer = null;
+
+        function sendPosition(useBeacon) {
+            var position = player.currentTime;
+            if (!position) {
+                return;
+            }
+
+            var body = new URLSearchParams({position_seconds: position});
+
+            if (useBeacon && navigator.sendBeacon) {
+                navigator.sendBeacon(
+                    '/media/' + mediaId + '/progress',
+                    new Blob([body.toString()], {type: 'application/x-www-form-urlencoded'})
+                );
+                return;
+            }
+
+            fetch('/media/' + mediaId + '/progress', {method: 'POST', body: body});
+        }
+
+        // Mêmes déclencheurs que le lecteur vidéo (voir video_player.html) :
+        // filet toutes les 30s pendant la lecture, plus pause/fin/fermeture
+        // d'onglet - pas d'enchaînement automatique ici, un audiobook n'a
+        // qu'un seul fichier.
+        player.addEventListener('play', function () {
+            clearInterval(saveTimer);
+            saveTimer = setInterval(function () { sendPosition(false); }, 30000);
+        });
+
+        player.addEventListener('pause', function () {
+            clearInterval(saveTimer);
+            sendPosition(false);
+        });
+
+        player.addEventListener('ended', function () {
+            clearInterval(saveTimer);
+            sendPosition(true);
+        });
+
+        document.addEventListener('visibilitychange', function () {
+            if (document.visibilityState === 'hidden') {
+                sendPosition(true);
+            }
+        });
+
+        window.addEventListener('pagehide', function () {
+            sendPosition(true);
+        });
+    })();
+</script>
+
+{% if seek_seconds %}
+<script>
+    (function () {
+        var player = document.getElementById('player');
+        player.addEventListener('loadedmetadata', function () {
+            player.currentTime = {{ seek_seconds }};
+        });
+    })();
+</script>
+{% endif %}
+{% endblock %}
