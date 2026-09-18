@@ -1189,6 +1189,169 @@ backlog plus difficile à corriger sans le signaler d'abord.
   serait pas jugeable dans ces conditions. À faire une fois la vraie
   bibliothèque de Gautier chargée.
 
+Cinq chantiers cadrés avec Gautier pour la suite, dans cet ordre
+(chacun est le prérequis du suivant) :
+
+- **Studia en conteneur, avec dossiers configurables.** Aujourd'hui
+  les chemins de bibliothèque et de base sont locaux et figés. Cible :
+  Studia servi par Docker, avec deux emplacements distincts définis
+  par un administrateur depuis une page d'administration — le dossier
+  de dépôt (où arrivent les contenus à importer) et le dossier de
+  bibliothèque (propre et figé). Ils doivent être montés dans le
+  conteneur, et l'un ne doit jamais être l'autre ni un de ses
+  sous-dossiers : une règle de validation doit le refuser, sinon le
+  scanner indexerait des contenus en cours de préparation. Prérequis
+  de tout le reste : tant que Studia ne sait pas où est sa
+  bibliothèque, l'import n'a nulle part où écrire.
+
+- **Module d'import, version 1.** Transforme un contenu de source
+  inconnue (téléchargement, production personnelle) en item propre
+  dans la bibliothèque. Adapté du mode opératoire manuel documenté
+  dans Notion (« Préparer une formation pour OfflineU », 53 formations
+  traitées), à transposer à Studia : ce qui était produit pour
+  OfflineU en HTML devient du JSON écrit directement, et les
+  métadonnées de livres ne viennent plus de Calibre mais de Google
+  Books et des sources déjà en place.
+
+  Deux voies d'entrée, un seul pipeline derrière :
+  - priorité au dossier de dépôt sur le serveur — les fichiers y sont
+    copiés par partage réseau, aucun transfert par le navigateur ;
+  - depuis le poste de l'utilisateur, par le sélecteur de dossier du
+    navigateur, avec envoi par morceaux permettant de reprendre après
+    une coupure (sans quoi une interruption sur 10 Go recommence
+    tout).
+
+  Le pipeline reprend les six points de contrôle du mode opératoire,
+  qui sont sa vraie valeur — ce sont eux qui ont détecté un
+  téléchargement incomplet, un décalage de numérotation qui aurait
+  faussé onze titres, et une troncature de 96 secondes invisible
+  autrement :
+  1. nombre de leçons annoncées = nombre de fichiers ;
+  2. durée mesurée de chaque position = durée du sommaire (tolérance
+     1 seconde) — seul moyen de détecter un décalage de numérotation ;
+  3. nombre de copies produites ;
+  4. aucune apostrophe dans les noms produits ;
+  5. durée totale source = durée totale destination ;
+  6. affichage correct dans Studia.
+
+  La table de correspondance position → titre est le seul endroit qui
+  demande un humain : le module la propose à partir des sources
+  disponibles (fichier texte, README, HTML, noms de fichiers déjà
+  propres, saisie manuelle), l'utilisateur la corrige, le contrôle des
+  durées la valide. L'import n'est jamais silencieux : il présente un
+  plan avant d'agir.
+
+  Deux modes de métadonnées : production personnelle (formulaire
+  saisi par l'utilisateur, avec propositions automatiques quand c'est
+  possible) ou plateforme (extraction depuis un fichier texte,
+  markdown ou HTML fourni, ou saisie de l'identifiant et du lien vers
+  la fiche en ligne).
+
+  Renommage et écriture des tags autorisés : c'est le rôle même de
+  l'import. L'interdit n°3 (ne jamais modifier ni renommer les
+  fichiers médias) protège la bibliothèque, pas la zone de dépôt — à
+  préciser dans cet interdit quand ce module arrivera.
+
+  Numérotation : suite continue (001 à 0NN, sous-dossiers de chapitre
+  en 0100, 0200…), pas de trous réservés, ressources en 900. Décision
+  prise après examen d'un schéma type CH01V10 : l'adresse
+  chapitre/position existe déjà en base via parent_path et sort_order,
+  la recopier dans les noms de fichiers n'apporterait rien et les
+  rendrait moins lisibles.
+
+  Version 1 volontairement fermée : un dossier inconnu devient un
+  nouvel item ; un dossier déjà présent dans la bibliothèque est
+  refusé avec explication. Aucune fusion, aucun écrasement, aucune
+  mise à jour — c'est le module suivant (voir plus bas). Après import
+  réussi et contrôles passés, la source est déplacée dans un
+  sous-dossier « traités » du dossier de dépôt, jamais supprimée
+  automatiquement.
+
+  L'accès à l'import sera réservé à un administrateur quand les
+  comptes existeront (V2, voir plus bas). D'ici là, un seul
+  utilisateur : ne pas construire d'authentification pour ce module,
+  mais faire passer son accès par un point unique qu'on branchera sur
+  les rôles le moment venu.
+
+- **Manifeste JSON par item.** Fichier de métadonnées écrit par
+  l'import dans le dossier de l'item, lisible par machine, remplaçant
+  le HTML produit pour OfflineU. Il préserve la règle fondatrice : la
+  base reste un index reconstructible. Sans lui, auteur, année,
+  plateforme, description et avertissements n'existeraient plus qu'en
+  base et disparaîtraient à sa reconstruction.
+
+  Contenu, de deux natures distinctes :
+  - ce qui n'existe nulle part ailleurs : auteur, année, plateforme et
+    identifiant externe, description, avertissement (contenu daté,
+    leçons périmées), raison de conservation ;
+  - un état de référence à l'import, pour chaque fichier : chemin,
+    taille, durée, titre du tag, plus les totaux.
+
+  Le second n'est pas un doublon des faits mesurables, à une condition
+  stricte : ces valeurs ne s'affichent jamais. La mesure fait toujours
+  foi à l'écran — c'est la leçon de « 5h33 (mesurée) » contre la durée
+  réelle, deux chiffres du même fait montrés côte à côte. Le manifeste
+  ne sert qu'à comparer et à signaler une divergence.
+
+  Il doit être écrit complet dès le premier import, même si rien ne le
+  relit encore : écrit au rabais, il obligerait à tout réimporter le
+  jour où la mise à jour arrivera.
+
+  Si un item importé n'a pas de manifeste, l'import en crée un.
+
+- **Fonction de consolidation, page d'administration.** Compare le
+  manifeste de chaque item au contenu réel du disque et rapporte les
+  divergences :
+  - fichier du manifeste absent du disque → fichier perdu ;
+  - durée plus courte que celle notée → troncature ;
+  - taille différente à durée identique → fichier remplacé ou
+    réencodé ;
+  - fichier présent sur le disque et absent du manifeste → ajout hors
+    import, signalé en rouge avec une action pour l'intégrer au
+    manifeste ;
+  - taille et durée identiques sous un autre nom → fichier renommé.
+
+  Ce dernier cas règle la ligne de backlog « fichier renommé = nouvel
+  id = progression perdue » ci-dessus : taille plus durée constituent
+  une empreinte suffisante, aucun hash nécessaire. C'est la seule
+  réparation automatique autorisée, parce qu'elle est sûre — le
+  rattachement préserve la progression. Tout le reste est rapporté,
+  jamais réparé : un fichier manquant peut avoir été supprimé
+  volontairement, une durée plus courte peut venir d'un réencodage
+  voulu.
+
+  Elle distingue « invérifiable » (item sans manifeste) de
+  « conforme » — deux états différents, pas un seul.
+
+  Elle tourne à la demande, jamais à chaque scan : sonder 300 fichiers
+  par ffprobe est trop coûteux pour une taxe au démarrage.
+
+- **Module de mise à jour d'un item importé.** Beaucoup plus tard,
+  après l'import v1. Permet de compléter ou corriger un item existant
+  sans le réimporter en entier : ajouter des chapitres à la suite (les
+  13, 14 et 15 après le 12), ou remplacer un chapitre existant par une
+  version retravaillée, y compris avec un nombre de vidéos différent
+  (les fichiers en trop sont à supprimer, ceux en plus se posent à la
+  suite dans le chapitre). Ajout de ressources ou de bonus également.
+
+  Le manifeste est le pivot : c'est lui qui dit ce que contient déjà
+  l'item, ce qui permet de classer chaque fichier entrant en nouveau,
+  identique, modifié ou disparu.
+
+  Contraintes à respecter :
+  - la numérotation existante est préservée, jamais recalculée
+    globalement — un renumérotage changerait les chemins, donc les
+    ids, donc la progression ;
+  - remplacer un fichier au même emplacement préserve son id et sa
+    ligne progress. Reste à trancher à ce moment-là si une progression
+    enregistrée sur une version remplacée garde du sens ;
+  - pas d'insertion entre deux positions existantes : on remplace en
+    place ou on ajoute à la suite, jamais de 3,5.
+
+  Distingue trois cas à l'entrée : même nom et contenu identique → rien
+  à faire ; même nom, contenu différent → proposer une fusion en
+  montrant précisément ce qui change ; nom inconnu → nouvel item.
+
 ## Méthode de travail
 
 - Petits commits cohérents et testables, messages en anglais.
