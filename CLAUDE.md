@@ -408,9 +408,6 @@ Avant de commencer, deux nettoyages demandés par Gautier :
 - Item actif marqué via `{% block active_nav %}` (une chaîne : library,
   notes...), lu dans `_base.html` avec `self.active_nav()` et comparé
   au `key` de chaque item de nav.
-- Signature en bas ("Apprendre / Explorer / Progresser / Pour un
-  meilleur / Demain") : texte de la maquette, repris tel quel — c'est
-  une signature de marque, pas une donnée fabriquée.
 
 Icônes de nav : SVG simples écrites à la main (pas de librairie
 d'icônes, pas de CDN — cohérent avec l'appli hors-ligne). Ce n'est pas

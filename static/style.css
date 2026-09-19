@@ -126,32 +126,6 @@ summary:focus-visible {
     pointer-events: none;
 }
 
-.sidebar-footer {
-    margin-top: auto;
-    padding: var(--space-24) var(--space-8) 0;
-    border-top: 1px solid var(--color-border);
-}
-
-.sidebar-tagline {
-    /* Même point de départ et même largeur que le texte des entrées
-       de navigation — recalculés à partir des mêmes ingrédients que
-       .sidebar-nav-item (padding, icône, espace) plutôt que recopiés
-       en dur, pour ne pas se déphaser si ces valeurs changent.
-       .sidebar-footer contribue déjà --space-8 de padding, à
-       soustraire. Deux valeurs restent en dur faute de token : la
-       largeur de la sidebar (240px, .sidebar) et la taille de l'icône
-       (20px, .sidebar-nav-item .icon) — à mettre à jour ici si l'une
-       des deux change, comme pour les seuils de breakpoint (voir
-       tokens.css). */
-    margin-left: calc(var(--space-12) + 20px + var(--space-12) - var(--space-8));
-    max-width: calc(240px - (var(--space-16) * 2) - (var(--space-12) * 2) - 20px - var(--space-12));
-    font-size: var(--font-size-annotation);
-    color: var(--color-text-tertiary);
-    line-height: var(--line-height-metadata);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-}
-
 .app-main {
     flex: 1;
     min-width: 0;
@@ -242,10 +216,6 @@ summary:focus-visible {
     .sidebar-nav-item span {
         display: none;
     }
-
-    .sidebar-footer {
-        display: none;
-    }
 }
 
 /* Smartphone (<720px) : sidebar en tiroir, masquée par défaut, ouverte
@@ -295,10 +265,6 @@ summary:focus-visible {
 
     .sidebar-nav-item span {
         display: inline;
-    }
-
-    .sidebar-footer {
-        display: block;
     }
 
     body.sidebar-open .sidebar {
@@ -1527,6 +1493,17 @@ video {
     border-radius: var(--radius-lg);
     display: block;
     background: #000;
+    /* Sans ceci, la boîte n'a aucune hauteur connue tant que les
+       dimensions réelles de la vidéo ne sont pas chargées (entre un
+       changement de source et "loadedmetadata") : elle s'effondre à la
+       hauteur par défaut du navigateur (150px) puis reprend sa taille
+       d'un coup, provoquant un saut visible - et un saut de la page
+       elle-même si elle était scrollée près du bas. "auto 16 / 9" réserve
+       ce ratio (dominant dans les captures d'écran de formation) tant que
+       le ratio réel n'est pas connu, mais s'efface dès qu'il l'est : une
+       vidéo qui ne serait pas en 16:9 garde ses vraies proportions,
+       jamais étirée. */
+    aspect-ratio: auto 16 / 9;
 }
 
 /* Fondu entrant sur un changement de vidéo sans rechargement
