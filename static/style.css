@@ -1529,6 +1529,22 @@ video {
     background: #000;
 }
 
+/* Fondu entrant sur un changement de vidéo sans rechargement
+   (goToMedia, video_player.html) : l'opacité est ramenée à 0 sans
+   transition juste avant de changer de source (disparition brute de
+   l'ancienne image, jamais ralentie), puis remontée à 1 avec cette
+   transition une fois la nouvelle image prête ("loadeddata") - jamais
+   au premier chargement de /watch, où l'opacité ne bouge jamais. */
+#player {
+    transition: opacity 130ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #player {
+        transition: none;
+    }
+}
+
 audio {
     width: 100%;
     display: block;
@@ -1641,6 +1657,12 @@ audio {
     color: var(--color-text-secondary);
     font-size: var(--font-size-nav);
     border-left: 3px solid transparent;
+    /* Le changement de vidéo (tranche "sans rechargement") remplace la
+       ligne "current" par une autre sans recharger la page : cette
+       transition fait glisser la mise en évidence d'une ligne à
+       l'autre plutôt qu'un changement brut. */
+    transition: background-color 0.2s ease, border-left-color 0.2s ease,
+        color 0.2s ease;
 }
 
 .playlist .file-row:hover {

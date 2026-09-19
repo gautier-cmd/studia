@@ -15,6 +15,7 @@ garde-fou, en non-régression.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -383,9 +384,15 @@ def test_sans_position_enregistree_pas_de_reprise(client) -> None:
     )
 
     response = client.get(f"/watch/{media_id}")
+    data = response.data.decode()
 
     assert response.status_code == 200
-    assert b"player.currentTime =" not in response.data
+    # "player.currentTime = seekSeconds;" (une variable) est toujours
+    # présent depuis le changement de vidéo sans rechargement : seul un
+    # nombre littéral juste après signale une vraie reprise (voir
+    # test_lecteur_video_reprend_a_la_position_donnee).
+    assert not re.search(r"player\.currentTime = \d", data)
+    assert 'data-seek="0"' in data
 
 
 def test_item_sans_media_principal_jamais_termine(client) -> None:
@@ -413,9 +420,13 @@ def test_video_terminee_repart_du_debut_a_la_reouverture(client) -> None:
     assert fetch_progress_row(client, media_id)["completed"] == 1
 
     response = client.get(f"/watch/{media_id}")
+    data = response.data.decode()
 
     assert response.status_code == 200
-    assert b"player.currentTime =" not in response.data
+    # Vidéo déjà terminée, rouverte sans repère explicite : repart du
+    # début, aucune reprise (voir la même remarque plus haut).
+    assert not re.search(r"player\.currentTime = \d", data)
+    assert 'data-seek="0"' in data
 
 
 def test_repere_explicite_fonctionne_meme_sur_video_terminee(client) -> None:
@@ -477,9 +488,13 @@ def test_centrage_playlist_present(client) -> None:
     # mécanisme. Plus de dépendance à "loadedmetadata" ni à un
     # ResizeObserver depuis que la hauteur de .playlist est purement
     # CSS (position: sticky) - le script s'exécute directement.
-    # Positionnement direct (scrollTop), jamais animé (scrollTo/smooth) :
-    # la liste reste masquée (visibility: hidden) jusqu'à être
-    # positionnée, pour qu'aucun mouvement ne soit visible à l'écran.
+    # Positionnement initial direct (scrollTop), jamais animé : la
+    # liste reste masquée (visibility: hidden) jusqu'à être
+    # positionnée, pour qu'aucun mouvement ne soit visible à l'écran au
+    # chargement. "scrollTo" (animé) n'est utilisé qu'après un
+    # changement de vidéo sans rechargement, et seulement si la
+    # nouvelle ligne courante sort de la zone déjà visible - jamais au
+    # premier affichage.
     current_id = media_id_by_relative_path(
         client, "01 - Bases/001 - Interface.mp4"
     )
@@ -487,8 +502,8 @@ def test_centrage_playlist_present(client) -> None:
     response = client.get(f"/watch/{current_id}")
     data = response.data.decode()
 
-    assert "playlist.scrollTop = target" in data
-    assert "scrollTo(" not in data
+    assert "playlist.scrollTop = computeCenterTarget(initialCurrent)" in data
+    assert "behavior: 'smooth'" in data
     assert "document.referrer" not in data
     assert 'id="playlist" style="visibility: hidden;"' in data
     assert "playlist.style.visibility = 'visible'" in data
@@ -1462,9 +1477,11 @@ def test_position_zero_enregistree_pas_de_script_de_reprise_car_inutile(
     client.post(f"/media/{media_id}/progress", data={"position_seconds": "0"})
 
     response = client.get(f"/watch/{media_id}")
+    data = response.data.decode()
 
     assert response.status_code == 200
-    assert b"player.currentTime =" not in response.data
+    assert not re.search(r"player\.currentTime = \d", data)
+    assert 'data-seek="0"' in data
 
 
 # --- Remise à zéro par média : retirée -------------------------------------

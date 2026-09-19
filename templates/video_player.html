@@ -8,6 +8,7 @@
 {% set state = progress_states.get(item['id'], 'not_started') %}
 {% set is_current = item['id'] == current_media_id %}
 <a class="file-row {{ 'current' if is_current else '' }}"
+   data-media-id="{{ item['id'] }}"
    href="{{ url_for('watch_video', media_id=item['id']) }}">
     {% if number %}<span class="file-number">{{ number }}</span>{% endif %}
     <span class="file-main">
@@ -37,18 +38,24 @@
     <div class="main">
         <a class="back" href="{{ url_for('item_detail', item_id=media['item_id']) }}">← {{ media['item_title'] }}</a>
         <h1>{{ clean_file_title(media['relative_path'].rsplit('/', 1)[-1]) }}</h1>
-        <video id="player" controls autoplay src="{{ url_for('media_file', media_id=media['id']) }}"></video>
+        <video id="player" controls autoplay
+               src="{{ url_for('media_file', media_id=media['id']) }}"
+               data-media-id="{{ media['id'] }}"
+               data-number="{{ player_context.number }}"
+               data-title="{{ player_context.title }}"
+               data-duration="{{ media['duration_seconds'] or 0 }}"
+               data-seek="{{ seek_seconds or 0 }}"></video>
         <div class="nav-buttons">
             {% if prev_id %}
-            <a href="{{ url_for('watch_video', media_id=prev_id) }}">← Précédent</a>
+            <a data-rel="prev" href="{{ url_for('watch_video', media_id=prev_id) }}">← Précédent</a>
             {% else %}
-            <span class="disabled">← Précédent</span>
+            <span class="disabled" data-rel="prev">← Précédent</span>
             {% endif %}
 
             {% if next_id %}
-            <a href="{{ url_for('watch_video', media_id=next_id) }}">Suivant →</a>
+            <a data-rel="next" href="{{ url_for('watch_video', media_id=next_id) }}">Suivant →</a>
             {% else %}
-            <span class="disabled">Suivant →</span>
+            <span class="disabled" data-rel="next">Suivant →</span>
             {% endif %}
         </div>
 
@@ -86,99 +93,156 @@
 {% block print %}{{ render_print_block(media['item_title']) }}{% endblock %}
 
 {% block scripts %}
+{% if seek_seconds %}
+<script>
+    (function () {
+        var player = document.getElementById('player');
+        player.addEventListener('loadedmetadata', function () {
+            player.currentTime = {{ seek_seconds }};
+        });
+    })();
+</script>
+{% endif %}
+
 <script>
     (function () {
         var playlist = document.getElementById('playlist');
-        if (!playlist) {
+        var player = document.getElementById('player');
+        if (!playlist || !player) {
             return;
         }
 
-        // Le chapitre courant s'ouvre toujours (pour montrer où on en
-        // est) et n'enregistre jamais son état : sinon, le fermer une
-        // fois masquerait la leçon en cours sur toute vidéo suivante
-        // du même chapitre. Les autres chapitres gardent l'état
-        // choisi par la personne, chapitre par chapitre, d'une vidéo
-        // à l'autre. Ce script s'exécute avant celui du centrage
-        // ci-dessous : rouvrir un chapitre change la hauteur de la
-        // liste, le centrage doit voir la disposition finale.
-        var storageKey = 'studia-playlist-open-' + {{ media['item_id'] | tojson }};
+        // --- État des chapitres (ouvert/fermé), par item -----------------
+        // Le chapitre qui contient la vidéo courante s'ouvre toujours et
+        // n'enregistre jamais son état tant qu'il l'est (sinon le fermer
+        // une fois masquerait la leçon en cours dès la vidéo suivante du
+        // même chapitre) : "current" se vérifie sur l'attribut
+        // data-current au moment du toggle, jamais sur une valeur figée à
+        // l'affichage - un changement de vidéo sans rechargement (tranche
+        // dédiée) peut déplacer ce statut d'un chapitre à un autre en
+        // cours de session.
+        var chapterStorageKey = 'studia-playlist-open-' + {{ media['item_id'] | tojson }};
 
-        function loadState() {
+        function loadChapterState() {
             try {
-                return JSON.parse(localStorage.getItem(storageKey) || '{}');
+                return JSON.parse(localStorage.getItem(chapterStorageKey) || '{}');
             } catch (e) {
                 return {};
             }
         }
 
-        function saveState(state) {
+        function saveChapterState(state) {
             try {
-                localStorage.setItem(storageKey, JSON.stringify(state));
+                localStorage.setItem(chapterStorageKey, JSON.stringify(state));
             } catch (e) {
                 /* stockage indisponible : la préférence ne survivra pas à cette page */
             }
         }
 
-        var state = loadState();
+        var chapterState = loadChapterState();
 
         playlist.querySelectorAll('details.playlist-chapter').forEach(function (details) {
             var key = details.getAttribute('data-chapter');
-            var isCurrent = details.hasAttribute('data-current');
 
-            if (!isCurrent && Object.prototype.hasOwnProperty.call(state, key)) {
-                details.open = state[key];
+            if (!details.hasAttribute('data-current')
+                    && Object.prototype.hasOwnProperty.call(chapterState, key)) {
+                details.open = chapterState[key];
             }
 
             details.addEventListener('toggle', function () {
-                if (isCurrent) {
+                if (details.hasAttribute('data-current')) {
                     return;
                 }
-                state[key] = details.open;
-                saveState(state);
+                chapterState[key] = details.open;
+                saveChapterState(chapterState);
             });
         });
 
-        // Positionnement de la ligne courante. #playlist démarre masqué
-        // (visibility: hidden posé en dur dans le gabarit) : tant que ce
-        // script n'a pas calculé et appliqué la position finale, rien
-        // n'est montré à l'écran - ni le "flash" liste-en-haut-puis-
-        // repositionnée du premier affichage, ni un défilement animé
-        // perceptible en venant d'une autre vidéo. C'est pourquoi
-        // l'affectation est directe (scrollTop) et non un scrollTo animé :
-        // aucun cas ne doit se voir bouger, contrairement à ce qui était
-        // fait avant pour une navigation Précédent/Suivant/enchaînement.
-        // Chaque changement de vidéo recharge entièrement la page tant
-        // que la tranche "changement sans rechargement" n'existe pas -
-        // ce calcul doit donc se refaire, invisible, à chaque affichage.
-        var current = playlist.querySelector('.file-row.current');
-        if (current && window.innerWidth > 719) {
-            var target = current.offsetTop - playlist.clientHeight / 2
-                + current.offsetHeight / 2;
+        // Chapitre qui perd/gagne le statut "courant" lors d'un
+        // changement de vidéo sans rechargement : l'ancien retombe sur sa
+        // préférence mémorisée (fermé par défaut, comme un premier
+        // chargement) ; le nouveau s'ouvre.
+        function updateCurrentChapter(oldMediaId, newMediaId) {
+            var oldRow = playlist.querySelector('.file-row[data-media-id="' + oldMediaId + '"]');
+            var newRow = playlist.querySelector('.file-row[data-media-id="' + newMediaId + '"]');
+            var oldChapter = oldRow ? oldRow.closest('details.playlist-chapter') : null;
+            var newChapter = newRow ? newRow.closest('details.playlist-chapter') : null;
+
+            if (oldChapter && oldChapter !== newChapter) {
+                oldChapter.removeAttribute('data-current');
+                var key = oldChapter.getAttribute('data-chapter');
+                oldChapter.open = Object.prototype.hasOwnProperty.call(chapterState, key)
+                    ? chapterState[key]
+                    : false;
+            }
+
+            if (newChapter) {
+                newChapter.setAttribute('data-current', '');
+                newChapter.open = true;
+            }
+        }
+
+        // --- Position de la ligne courante dans la liste -----------------
+        function computeCenterTarget(row) {
+            var target = row.offsetTop - playlist.clientHeight / 2 + row.offsetHeight / 2;
             var max = playlist.scrollHeight - playlist.clientHeight;
             // Borner entre 0 et max donne les deux extrémités pour rien :
             // au début, la cible calculée est négative -> 0, la liste
             // reste en haut et l'item descend jusqu'au centre ; à la fin,
             // la cible dépasse max -> max, la liste est au bout et
             // l'item continue de descendre.
-            target = Math.max(0, Math.min(target, max));
-            playlist.scrollTop = target;
+            return Math.max(0, Math.min(target, max));
         }
 
+        // Positionnement initial. #playlist démarre masqué (visibility:
+        // hidden posé en dur dans le gabarit) : tant que ce bloc n'a pas
+        // calculé et appliqué la position finale, rien n'est montré à
+        // l'écran - pas de "flash" liste-en-haut-puis-repositionnée au
+        // premier affichage. Affectation directe (scrollTop), jamais un
+        // scrollTo animé : rien ne doit se voir bouger ici.
+        var initialCurrent = playlist.querySelector('.file-row.current');
+        if (initialCurrent && window.innerWidth > 719) {
+            playlist.scrollTop = computeCenterTarget(initialCurrent);
+        }
         playlist.style.visibility = 'visible';
-    })();
-</script>
 
-<script>
-    (function () {
-        var player = document.getElementById('player');
-        if (!player) {
-            return;
+        // Repositionnement après un changement de vidéo sans
+        // rechargement : seulement si la nouvelle ligne courante sort de
+        // la zone visible - sinon la liste ne bouge pas du tout. Quand
+        // elle bouge, c'est un déplacement voulu pendant une navigation
+        // active (pas un chargement de page) : animé, contrairement au
+        // positionnement initial ci-dessus.
+        function repositionPlaylistIfNeeded() {
+            var current = playlist.querySelector('.file-row.current');
+            if (!current || window.innerWidth <= 719) {
+                return;
+            }
+            var visibleTop = playlist.scrollTop;
+            var visibleBottom = visibleTop + playlist.clientHeight;
+            var rowTop = current.offsetTop;
+            var rowBottom = rowTop + current.offsetHeight;
+            if (rowTop >= visibleTop && rowBottom <= visibleBottom) {
+                return;
+            }
+            playlist.scrollTo({top: computeCenterTarget(current), behavior: 'smooth'});
         }
 
-        var mediaId = {{ media['id'] | tojson }};
+        // --- Sauvegarde de la position de lecture ------------------------
+        // Toujours contre le média identifié par player.dataset.mediaId,
+        // jamais un id figé : un changement de vidéo sans rechargement le
+        // met à jour à chaque navigation (voir goToMedia ci-dessous).
         var saveTimer = null;
 
-        function sendPosition(useBeacon) {
+        function beaconPosition(mediaId, body) {
+            if (navigator.sendBeacon) {
+                navigator.sendBeacon(
+                    '/media/' + mediaId + '/progress',
+                    new Blob([body.toString()], {type: 'application/x-www-form-urlencoded'})
+                );
+            }
+        }
+
+        function savePosition(useBeacon) {
             var position = player.currentTime;
             // 0 est une position valide (glisser la barre au tout début,
             // ou mettre en pause dans la première seconde) : "!position"
@@ -186,82 +250,102 @@
             // valeur fausse en JavaScript. Seule une valeur non numérique
             // doit être ignorée.
             if (typeof position !== 'number' || Number.isNaN(position)) {
-                return;
+                return Promise.resolve();
             }
 
+            var mediaId = player.dataset.mediaId;
             var body = new URLSearchParams({position_seconds: position});
 
-            if (useBeacon && navigator.sendBeacon) {
-                navigator.sendBeacon(
-                    '/media/' + mediaId + '/progress',
-                    new Blob([body.toString()], {type: 'application/x-www-form-urlencoded'})
-                );
-                return;
+            if (useBeacon) {
+                beaconPosition(mediaId, body);
+                return Promise.resolve();
             }
 
-            fetch('/media/' + mediaId + '/progress', {method: 'POST', body: body});
+            // Sans sendBeacon : la page ne se décharge pas (filet des
+            // 30s/pause ci-dessous), on peut attendre la réponse.
+            return fetch('/media/' + mediaId + '/progress', {method: 'POST', body: body})
+                .catch(function () { /* best-effort : rien d'autre n'en dépend ici */ });
+        }
+
+        // Écriture avant un changement de vidéo (goToMedia ci-dessous) :
+        // en local cette requête prend quelques millisecondes, mais nous
+        // l'attendons (await) pour que le rendu de la page suivante voie
+        // déjà la position à jour (coche "Terminé" incluse). Un délai
+        // borne l'attente à 1 seconde plutôt que de risquer un clic sans
+        // effet visible en cas de réseau lent ou de serveur qui ne répond
+        // pas : passé ce délai (ou en cas d'erreur), la position n'est
+        // pas perdue pour autant - un sendBeacon "tire et oublie" la
+        // renvoie, même mécanisme que pour une fermeture d'onglet - et le
+        // changement de vidéo se poursuit sans message à l'écran (une
+        // alerte pour une position de lecture serait disproportionnée).
+        var SAVE_BEFORE_NAVIGATE_TIMEOUT_MS = 1000;
+
+        function savePositionBeforeNavigate() {
+            var position = player.currentTime;
+            if (typeof position !== 'number' || Number.isNaN(position)) {
+                return Promise.resolve();
+            }
+
+            var mediaId = player.dataset.mediaId;
+            var body = new URLSearchParams({position_seconds: position});
+            var controller = new AbortController();
+            var timer = setTimeout(function () { controller.abort(); }, SAVE_BEFORE_NAVIGATE_TIMEOUT_MS);
+
+            return fetch('/media/' + mediaId + '/progress', {
+                method: 'POST',
+                body: body,
+                signal: controller.signal
+            }).then(function () {
+                clearTimeout(timer);
+            }).catch(function () {
+                clearTimeout(timer);
+                beaconPosition(mediaId, body);
+            });
         }
 
         // Filet contre un plantage seulement : la pause, la fermeture
-        // d'onglet et la fin de vidéo (ci-dessous) couvrent déjà les
-        // cas réels d'arrêt. 30 secondes plutôt qu'un intervalle plus
-        // court - une formation de plusieurs dizaines d'heures n'a pas
-        // besoin d'écrire beaucoup plus souvent que ça pour limiter la
-        // perte à un intervalle raisonnable en cas de plantage.
+        // d'onglet et la fin de vidéo couvrent déjà les cas réels d'arrêt.
+        // 30 secondes plutôt qu'un intervalle plus court - une formation
+        // de plusieurs dizaines d'heures n'a pas besoin d'écrire beaucoup
+        // plus souvent que ça pour limiter la perte à un intervalle
+        // raisonnable en cas de plantage.
         player.addEventListener('play', function () {
             clearInterval(saveTimer);
-            saveTimer = setInterval(function () { sendPosition(false); }, 30000);
+            saveTimer = setInterval(function () { savePosition(false); }, 30000);
         });
 
         player.addEventListener('pause', function () {
             clearInterval(saveTimer);
-            sendPosition(false);
-        });
-
-        player.addEventListener('ended', function () {
-            clearInterval(saveTimer);
-            // sendBeacon plutôt que fetch : la fin de vidéo déclenche
-            // souvent un enchaînement automatique immédiat (script
-            // plus bas), qui changerait de page avant qu'un fetch
-            // classique ait eu le temps d'aboutir.
-            sendPosition(true);
+            savePosition(false);
         });
 
         // Deux évènements différents pour le même besoin (fermeture
         // d'onglet ou de fenêtre) : selon le navigateur, l'un des deux
         // peut ne pas se déclencher - comme pour la note
         // (_note_widget.html), sendBeacon est pensé pour aboutir même
-        // pendant un déchargement de page.
+        // pendant un déchargement de page. Ceux-ci restent utiles même
+        // sans rechargement de page : fermer l'onglet reste un vrai
+        // déchargement.
         document.addEventListener('visibilitychange', function () {
             if (document.visibilityState === 'hidden') {
-                sendPosition(true);
+                savePosition(true);
             }
         });
 
         window.addEventListener('pagehide', function () {
-            sendPosition(true);
+            savePosition(true);
         });
-    })();
-</script>
 
-<script>
-    (function () {
-        // Rafraîchit l'affichage de la ligne courante pendant la
-        // lecture (texte "en cours" et micro-barre de position) - un
-        // rafraîchissement d'AFFICHAGE seul, sur "timeupdate" du
-        // lecteur. L'enregistrement en base garde exactement son
-        // rythme actuel (script ci-dessus : 30s, pause, fin,
-        // fermeture) : ceci ne fait strictement aucune requête réseau.
-        // Ne touche que la ligne courante, jamais toute la liste.
-        var player = document.getElementById('player');
-        var currentRow = document.querySelector('.playlist .file-row.current');
-        if (!player || !currentRow) {
-            return;
-        }
-
-        var meta = currentRow.querySelector('.file-meta');
-        var fill = currentRow.querySelector('.file-position-fill');
-        var duration = {{ media['duration_seconds'] | tojson }};
+        // --- Affichage en direct de la ligne courante --------------------
+        // Rafraîchit l'affichage de la ligne courante pendant la lecture
+        // (texte "en cours" et micro-barre de position) - un
+        // rafraîchissement d'AFFICHAGE seul, sur "timeupdate" du lecteur.
+        // L'enregistrement en base garde exactement son rythme ci-dessus :
+        // ceci ne fait strictement aucune requête réseau. Ne touche que la
+        // ligne courante (retrouvée à chaque évènement, jamais gardée en
+        // référence : un changement de vidéo la remplace) et lit la durée
+        // sur player.dataset.duration plutôt qu'une constante figée, pour
+        // la même raison.
 
         // Mêmes règles que format_clock/format_duration côté serveur
         // (studia.py) - dupliquées ici volontairement : ce sont des
@@ -281,7 +365,7 @@
             if (!seconds) {
                 return '—';
             }
-            var NBSP = ' ';
+            var NBSP = ' ';
             seconds = Math.floor(seconds);
             var heures = Math.floor(seconds / 3600);
             var reste = seconds % 3600;
@@ -298,6 +382,13 @@
         }
 
         player.addEventListener('timeupdate', function () {
+            var currentRow = playlist.querySelector('.file-row.current');
+            if (!currentRow) {
+                return;
+            }
+            var meta = currentRow.querySelector('.file-meta');
+            var fill = currentRow.querySelector('.file-position-fill');
+            var duration = parseFloat(player.dataset.duration) || 0;
             if (meta) {
                 meta.textContent = formatClock(player.currentTime) + ' / '
                     + formatDuration(duration) + ' · en cours';
@@ -306,58 +397,223 @@
                 fill.style.width = Math.min(player.currentTime / duration * 100, 100) + '%';
             }
         });
-    })();
-</script>
 
-{% if seek_seconds %}
-<script>
-    (function () {
-        var player = document.getElementById('player');
-        player.addEventListener('loadedmetadata', function () {
-            player.currentTime = {{ seek_seconds }};
-        });
-    })();
-</script>
-{% endif %}
-
-{% if next_id %}
-<script>
-    (function () {
-        var player = document.getElementById('player');
-
+        // --- Garde-fou contre l'enchaînement en cascade ------------------
         // La reprise (ou un repère ?t=) peut positionner la vidéo à
-        // quelques instants de sa fin : "ended" se déclenche alors
-        // sans qu'aucune image n'ait réellement défilé, et il ne faut
-        // pas enchaîner dans ce cas - seulement quand la vidéo s'est
-        // vraiment terminée en cours de lecture.
+        // quelques instants de sa fin : "ended" se déclenche alors sans
+        // qu'aucune image n'ait réellement défilé, et il ne faut pas
+        // enchaîner dans ce cas - seulement quand la vidéo s'est vraiment
+        // terminée en cours de lecture.
         //
-        // "played" (HTMLMediaElement.played) est une mesure native de
-        // ce que le navigateur a réellement joué, distincte de
-        // currentTime : un positionnement par script n'y ajoute rien
-        // tant que la lecture n'a pas défilé. Le plancher (0,25s) ne
-        // dépend pas du temps écoulé depuis le chargement de la page
-        // (ça casserait sur une vidéo très courte) : il ne dépend que
-        // de la quantité de vidéo réellement jouée, donc s'applique
-        // pareil quelle que soit sa durée totale.
+        // "played" (HTMLMediaElement.played) est une mesure native de ce
+        // que le navigateur a réellement joué, distincte de currentTime :
+        // un positionnement par script n'y ajoute rien tant que la lecture
+        // n'a pas défilé. Le plancher (0,25s) ne dépend pas du temps
+        // écoulé depuis le chargement (ça casserait sur une vidéo très
+        // courte) : il ne dépend que de la quantité réellement jouée, et
+        // se remet donc à zéro naturellement à chaque changement de
+        // source, avec ou sans rechargement de page.
         var GENUINE_PLAYBACK_FLOOR_SECONDS = 0.25;
 
         function hasPlayedGenuinely() {
             var ranges = player.played;
             var total = 0;
-
             for (var i = 0; i < ranges.length; i++) {
                 total += ranges.end(i) - ranges.start(i);
             }
-
             return total >= GENUINE_PLAYBACK_FLOOR_SECONDS;
         }
 
-        player.addEventListener('ended', function () {
-            if (hasPlayedGenuinely()) {
-                window.location.href = {{ url_for('watch_video', media_id=next_id) | tojson }};
+        // --- Changement de vidéo sans rechargement de page ---------------
+        // Remplace la source du lecteur et les quelques morceaux de DOM
+        // concernés (titre, boutons précédent/suivant, les deux lignes de
+        // playlist affectées, chapitre courant) à la place de charger une
+        // nouvelle page - seul moyen de ne perdre ni la frappe en cours
+        // dans les notes (qui appartiennent à l'item, pas au média, donc
+        // ne changent jamais ici) ni les écouteurs déjà posés. Le rendu
+        // vient toujours du serveur (fetch de la même page /watch/<id>
+        // qu'une visite directe) : aucun calcul de progression ou de
+        // "terminé" n'est jamais refait ici, seulement replacé.
+        function replacePlaylistRow(mediaId, doc) {
+            if (!mediaId) {
+                return;
             }
+            var own = playlist.querySelector('.file-row[data-media-id="' + mediaId + '"]');
+            var fresh = doc.querySelector('.file-row[data-media-id="' + mediaId + '"]');
+            if (own && fresh) {
+                own.outerHTML = fresh.outerHTML;
+            }
+        }
+
+        // Fondu entrant sur l'image du lecteur, uniquement pour un
+        // changement de vidéo en place (jamais au premier chargement de
+        // /watch, où l'opacité n'est jamais touchée). Le passage à 0 est
+        // sans transition (disparition brute, jamais ralentie) : on
+        // désactive la transition CSS le temps de ce changement, on force
+        // un recalcul de style pour qu'il soit pris en compte avant de la
+        // réactiver, sinon le navigateur risque d'animer aussi la
+        // descente à 0.
+        function hidePlayerInstant() {
+            player.style.transition = 'none';
+            player.style.opacity = '0';
+            void player.offsetHeight;
+            player.style.transition = '';
+        }
+
+        function revealPlayerFaded() {
+            player.style.opacity = '1';
+        }
+
+        async function goToMedia(url, push) {
+            // 1) Enregistrer la position de la vidéo qu'on quitte avant de
+            //    toucher à sa source : c'est le seul moment où
+            //    currentTime lui appartient encore. Bornée à 1 seconde et
+            //    jamais bloquante au-delà (voir savePositionBeforeNavigate) -
+            //    seule la fraîcheur de la coche "Terminé" sur l'ancienne
+            //    ligne en dépend dans le cas de repli.
+            clearInterval(saveTimer);
+            await savePositionBeforeNavigate();
+
+            var response;
+            var html;
+            try {
+                response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error('reponse http ' + response.status);
+                }
+                html = await response.text();
+            } catch (e) {
+                // Repli sûr : une vraie navigation, comme avant cette
+                // tranche, plutôt qu'un lecteur bloqué sur une erreur.
+                window.location.href = url;
+                return;
+            }
+
+            var doc = new DOMParser().parseFromString(html, 'text/html');
+            var newPlayerEl = doc.getElementById('player');
+            if (!newPlayerEl) {
+                window.location.href = url;
+                return;
+            }
+
+            var oldMediaId = player.dataset.mediaId;
+            var newMediaId = newPlayerEl.dataset.mediaId;
+
+            document.title = doc.title;
+
+            var newH1 = doc.querySelector('h1');
+            var ownH1 = document.querySelector('h1');
+            if (newH1 && ownH1) {
+                ownH1.textContent = newH1.textContent;
+            }
+
+            var newNavButtons = doc.querySelector('.nav-buttons');
+            var ownNavButtons = document.querySelector('.nav-buttons');
+            if (newNavButtons && ownNavButtons) {
+                ownNavButtons.outerHTML = newNavButtons.outerHTML;
+            }
+
+            // Seules les deux lignes concernées changent - jamais toute la
+            // liste, pour ne pas perdre l'état ouvert/fermé des autres
+            // chapitres ni la position de défilement.
+            replacePlaylistRow(oldMediaId, doc);
+            if (newMediaId !== oldMediaId) {
+                replacePlaylistRow(newMediaId, doc);
+            }
+            updateCurrentChapter(oldMediaId, newMediaId);
+
+            var seekSeconds = parseFloat(newPlayerEl.dataset.seek) || 0;
+
+            player.dataset.mediaId = newPlayerEl.dataset.mediaId;
+            player.dataset.number = newPlayerEl.dataset.number;
+            player.dataset.title = newPlayerEl.dataset.title;
+            player.dataset.duration = newPlayerEl.dataset.duration;
+
+            hidePlayerInstant();
+            player.pause();
+            player.src = newPlayerEl.getAttribute('src');
+            player.addEventListener('loadedmetadata', function onLoaded() {
+                player.removeEventListener('loadedmetadata', onLoaded);
+                if (seekSeconds) {
+                    player.currentTime = seekSeconds;
+                }
+            });
+            // "loadeddata" (première image décodée et disponible),
+            // jamais "loadedmetadata" (ne garantit qu'une dimension/durée
+            // connues, pas une image affichable) ni "play"/"playing" (qui
+            // dépendrait du démarrage réel de la lecture) : le fondu doit
+            // se jouer dès que l'image est prête à être montrée, pas
+            // avant, pas après.
+            player.addEventListener('loadeddata', function onReady() {
+                player.removeEventListener('loadeddata', onReady);
+                revealPlayerFaded();
+            });
+            player.load();
+            player.play();
+
+            repositionPlaylistIfNeeded();
+
+            if (push) {
+                history.pushState({mediaId: newMediaId}, '', url);
+            }
+        }
+
+        function mediaIdFromLink(link) {
+            if (link.dataset && link.dataset.mediaId) {
+                return link.dataset.mediaId;
+            }
+            var match = /\/watch\/(\d+)/.exec(link.getAttribute('href') || '');
+            return match ? match[1] : null;
+        }
+
+        // Délégation : Précédent/Suivant et chaque ligne de playlist sont
+        // de vrais liens <a href> (fonctionnent sans JavaScript) -
+        // n'intercepter qu'un clic simple du bouton gauche, sans
+        // modificateur, pour laisser ouvrir dans un nouvel onglet
+        // fonctionner normalement.
+        document.addEventListener('click', function (event) {
+            if (event.defaultPrevented || event.button !== 0
+                    || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+                return;
+            }
+            var link = event.target.closest('.nav-buttons a[href], .playlist a.file-row[href]');
+            if (!link) {
+                return;
+            }
+            var targetId = mediaIdFromLink(link);
+            if (!targetId || targetId === player.dataset.mediaId) {
+                event.preventDefault();
+                return;
+            }
+            event.preventDefault();
+            goToMedia(link.getAttribute('href'), true);
+        });
+
+        // Bouton Retour du navigateur : reproduit la même mise à jour de
+        // DOM que le clic, sans repousser d'entrée d'historique (déjà
+        // fait par le navigateur lui-même).
+        window.addEventListener('popstate', function () {
+            var match = /\/watch\/(\d+)/.exec(location.pathname);
+            if (!match || match[1] === player.dataset.mediaId) {
+                return;
+            }
+            goToMedia(location.pathname + location.search, false);
+        });
+
+        // Enchaînement automatique : attend que la position soit
+        // enregistrée avant de basculer, comme toute autre navigation
+        // (voir goToMedia) - la coche "Terminé" de la vidéo qui vient de
+        // se terminer doit apparaître dès ce changement, puisque le
+        // serveur vient d'enregistrer son état.
+        player.addEventListener('ended', function () {
+            clearInterval(saveTimer);
+            savePosition(false).then(function () {
+                var nextLink = document.querySelector('.nav-buttons a[data-rel="next"]');
+                if (nextLink && hasPlayedGenuinely()) {
+                    goToMedia(nextLink.getAttribute('href'), true);
+                }
+            });
         });
     })();
 </script>
-{% endif %}
 {% endblock %}

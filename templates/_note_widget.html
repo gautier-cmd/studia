@@ -582,8 +582,12 @@
         // titre à répéter, le repère se suffit de l'horodatage.
         var marker = timestamp + ' (/listen/{{ player_context.media_id }}?t=' + seconds + ')\n';
         {% else %}
-        var marker = 'Vidéo {{ player_context.number }} — {{ player_context.title }} — '
-            + timestamp + ' (/watch/{{ player_context.media_id }}?t=' + seconds + ')\n';
+        // Lus sur le lecteur (data-media-id/number/title), jamais figés
+        // dans ce script : le changement de vidéo sans rechargement
+        // (tranche dédiée) les met à jour à chaque navigation, ce
+        // bouton doit donc toujours viser la vidéo réellement affichée.
+        var marker = 'Vidéo ' + player.dataset.number + ' — ' + player.dataset.title + ' — '
+            + timestamp + ' (/watch/' + player.dataset.mediaId + '?t=' + seconds + ')\n';
         {% endif %}
 
         var position = textarea.selectionStart;

@@ -1215,6 +1215,70 @@ toujours de `compute_item_progress_percent` via `fetch_item_media_progress`.
 
 `pytest tests/` (187 tests) au vert.
 
+### Changement de vidéo sans rechargement (fait)
+
+Précédent, Suivant, clic sur une ligne de la playlist et enchaînement
+automatique remplacent la source du lecteur et les quelques morceaux
+de DOM concernés (titre, boutons précédent/suivant, les deux lignes de
+playlist affectées, chapitre courant) à la place de charger une
+nouvelle page (`goToMedia()`, `templates/video_player.html`) - le
+rendu vient toujours du serveur (`fetch` de la même page `/watch/<id>`
+qu'une visite directe, jamais un calcul de progression refait côté
+navigateur), seuls les morceaux nécessaires sont replacés.
+
+- **URL et bouton Retour.** `history.pushState` à chaque changement ;
+  un `popstate` (Retour/Suivant du navigateur) rejoue la même mise à
+  jour de DOM sans repousser d'entrée d'historique.
+- **Sauvegarde de la position avant le changement.** La position de la
+  vidéo qu'on quitte est écrite (`fetch`, attendu) avant de toucher à
+  la source du lecteur - c'est le seul moment où `currentTime` lui
+  appartient encore, et ce qui garantit que le rendu de la page
+  suivante voit déjà l'état à jour (coche "Terminé" incluse). Cette
+  attente est bornée à 1 seconde (`AbortController`) : passé ce délai
+  ou en cas d'erreur, la position n'est pas perdue pour autant - un
+  `sendBeacon` "tire et oublie" la renvoie, même mécanisme que pour une
+  fermeture d'onglet - et le changement de vidéo se poursuit sans
+  message à l'écran. **Conséquence de ce repli** : la coche "Terminé"
+  de la vidéo qu'on vient de quitter peut alors n'apparaître qu'à la
+  navigation suivante, puisque le serveur n'a pas fini d'écrire avant
+  le rendu de la page qu'on va chercher.
+- **Note inchangée.** Elle appartient à l'item, pas au média : jamais
+  touchée par `goToMedia()`, donc une frappe en cours (y compris son
+  minuteur de sauvegarde différée) survit à un changement de vidéo.
+  Le bouton "Insérer un repère" lit le numéro/titre/id de la vidéo sur
+  `player.dataset` (mis à jour à chaque navigation) plutôt que sur des
+  valeurs Jinja figées au premier chargement, pour viser la bonne
+  vidéo même après plusieurs changements sans rechargement.
+- **Playlist.** Seules les deux lignes concernées (l'ancienne, la
+  nouvelle) sont remplacées - jamais toute la liste, pour ne pas
+  perdre l'état ouvert/fermé des autres chapitres ni la position de
+  défilement. Le chapitre qui perd/gagne le statut courant s'ajuste en
+  conséquence (l'ancien retombe sur sa préférence mémorisée, comme un
+  premier chargement ; le nouveau s'ouvre). Le surlignage de la ligne
+  courante passe par une transition CSS (fondu sur fond/bordure/
+  couleur, ~0,2s) plutôt qu'un second calcul de défilement. La liste
+  ne se repositionne que si la nouvelle ligne courante sort de la zone
+  déjà visible, et de façon animée dans ce cas seulement (jamais au
+  premier affichage d'une page, qui reste invisible jusqu'à sa
+  position finale - voir "Progression visible et liste de lecture"
+  ci-dessus).
+- **Garde-fou `player.played` inchangé.** Il continue de fonctionner
+  sans adaptation : `player.played` se remet naturellement à zéro à
+  chaque changement de source, avec ou sans rechargement de page.
+- **Fondu entrant sur l'image du lecteur** (~120-150ms, 130ms retenu),
+  pour adoucir le changement brutal d'image qu'un rechargement de page
+  masquait auparavant. Entrant seulement : l'ancienne image disparaît
+  sans transition au moment du changement de source (`opacity: 0` posé
+  sans transition, jamais ralenti), la nouvelle apparaît en fondu une
+  fois réellement prête (évènement `loadeddata` du lecteur - pas
+  `loadedmetadata`, qui ne garantit qu'une durée/dimension connues, pas
+  une image affichable). Respecte `prefers-reduced-motion` : première
+  utilisation de cette media query dans le projet, la tranche
+  accessibilité n'avait couvert ni le contraste ni le focus ni les
+  modales que sous cet angle-là, jamais les animations.
+
+`pytest tests/` (187 tests) au vert.
+
 ## Méthode — backlog
 
 Avant de commencer une tranche, relire le backlog et signaler les

@@ -7,6 +7,7 @@ avant chaque test.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -291,11 +292,16 @@ def test_lecteur_video_sans_position_ne_cherche_pas_a_reprendre(client) -> None:
 
     assert response.status_code == 200
     # "loadedmetadata" seul ne suffit plus à repérer ce script
-    # précisément : le centrage automatique de la playlist (tranche
-    # "progression visible") s'y abonne aussi, sans rapport avec la
-    # reprise. Le marqueur propre à la reprise reste
-    # "player.currentTime =" (voir test_progress.py).
-    assert "player.currentTime =" not in data
+    # précisément : le centrage automatique de la playlist et le
+    # changement de vidéo sans rechargement s'y abonnent aussi, sans
+    # rapport avec la reprise - et ce dernier écrit lui-même
+    # "player.currentTime = seekSeconds;" (une variable, jamais un
+    # nombre) dans le gabarit à chaque affichage, qu'il y ait une
+    # reprise ou non. Le marqueur propre à une reprise réelle reste un
+    # nombre littéral juste après "player.currentTime =" (voir
+    # test_progress.py) : absent ici, seul "data-seek="0"" doit l'être.
+    assert not re.search(r"player\.currentTime = \d", data)
+    assert 'data-seek="0"' in data
 
 
 def test_lecteur_video_affiche_precedent_et_suivant(client) -> None:
@@ -330,7 +336,7 @@ def test_lecteur_video_premiere_video_sans_precedent(client) -> None:
     data = response.data.decode()
 
     assert response.status_code == 200
-    assert '<span class="disabled">← Précédent</span>' in data
+    assert '<span class="disabled" data-rel="prev">← Précédent</span>' in data
 
 
 def test_lecteur_video_derniere_video_sans_suivant(client) -> None:
@@ -342,11 +348,14 @@ def test_lecteur_video_derniere_video_sans_suivant(client) -> None:
     data = response.data.decode()
 
     assert response.status_code == 200
-    assert '<span class="disabled">Suivant →</span>' in data
-    # Pas de video suivante : pas de redirection automatique a la fin
-    # de la vidéo. L'écriture de la progression (voir test_progress.py),
-    # elle, garde son propre écouteur 'ended' quoi qu'il arrive.
-    assert "window.location.href" not in data
+    assert '<span class="disabled" data-rel="next">Suivant →</span>' in data
+    # Pas de video suivante : le changement de vidéo sans rechargement
+    # cherche un lien data-rel="next" à la fin de la vidéo (voir
+    # video_player.html, écouteur 'ended') - un <span> désactivé, sans
+    # href, ne peut jamais en fournir un, donc pas d'enchaînement.
+    # L'écriture de la progression (voir test_progress.py), elle,
+    # garde son propre appel quoi qu'il arrive.
+    assert '<a data-rel="next"' not in data
 
 
 # --------------------------------------------------------------------
