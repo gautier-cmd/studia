@@ -38,6 +38,8 @@
     <a class="file-title" href="{{ url_for('watch_video', media_id=media['id']) }}" title="{{ filename }}">{{ clean_file_title(filename) }}</a>
     {% elif media['media_type'] == 'audio' %}
     <a class="file-title" href="{{ url_for('listen_audio', media_id=media['id']) }}" title="{{ filename }}">{{ clean_file_title(filename) }}</a>
+    {% elif media['media_type'] == 'book' and media['extension'] == '.pdf' %}
+    <a class="file-title" href="{{ url_for('read_book', media_id=media['id']) }}" title="{{ filename }}">{{ clean_file_title(filename) }}</a>
     {% else %}
     <span class="file-title" title="{{ filename }}">{{ clean_file_title(filename) }}</span>
     {% endif %}
@@ -221,6 +223,10 @@
             Effacer la progression de <strong>{{ item['title'] }}</strong> et
             recommencer depuis le début ? Position actuelle :
             {{ format_duration(audiobook_position_seconds) }}.
+            {% elif item['item_type'] == 'book' %}
+            Effacer la progression de <strong>{{ item['title'] }}</strong> et
+            recommencer depuis le début ? Page{{ NBSP }}{{ book_page_number }} sur
+            {{ book_page_count }}.
             {% else %}
             {% set plural = completed_media_count >= 2 %}
             Effacer la progression de <strong>{{ item['title'] }}</strong> et

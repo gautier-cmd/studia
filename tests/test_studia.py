@@ -240,13 +240,16 @@ def test_fichier_video_supporte_les_requetes_range(client) -> None:
     assert response.headers["Content-Type"] == "video/mp4"
 
 
-def test_media_non_video_renvoie_404_sur_lecteur_et_fichier(client) -> None:
+def test_media_pdf_desormais_servi_mais_pas_par_watch(client) -> None:
+    # Le PDF a son propre lecteur (/read, tranche "Lecteur PDF") : le
+    # fichier est désormais servi (voir fetch_playable_media), mais
+    # /watch (vidéo) continue de le refuser - ce n'en est pas une.
     media_id = media_id_by_relative_path(
         client, "920 - Adobe Illustrator CS6 - Adobe Press.pdf"
     )
 
     assert client.get(f"/watch/{media_id}").status_code == 404
-    assert client.get(f"/media/{media_id}/file").status_code == 404
+    assert client.get(f"/media/{media_id}/file").status_code == 200
 
 
 def test_fiche_affiche_la_presentation_avec_nos_propres_moyens(client) -> None:

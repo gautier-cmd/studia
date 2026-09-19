@@ -20,12 +20,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from library_index import (  # noqa: E402
     NBSP,
     SCHEMA_VERSION,
+    connect_database,
     format_duration,
     natural_key,
     parent_of,
     probe_chapters,
     probe_duration,
     probe_missing_media_info,
+    probe_page_count,
+    reset_probed_media,
     scan_library,
 )
 
@@ -683,6 +686,123 @@ def test_probe_ne_refait_que_ce_qui_manque(
 
 
 # --------------------------------------------------------------------
+# Nombre de pages (PDF)
+# --------------------------------------------------------------------
+
+
+def test_probe_page_count_sur_faux_fichier(tmp_path: Path) -> None:
+    faux = tmp_path / "faux.pdf"
+    faux.write_bytes(b"pas un pdf")
+
+    # Meme principe que probe_duration/probe_chapters : None, jamais
+    # d'erreur, qu'il s'agisse d'un fichier illisible ou (comme ici)
+    # d'un fichier qui n'est pas vraiment un PDF.
+    assert probe_page_count(faux) is None
+
+
+def test_page_count_conserve_si_le_fichier_ne_change_pas(
+    library: Path, db: Path
+) -> None:
+    scan_library(library, db, verbose=False)
+
+    media_id = query(
+        db,
+        "SELECT id FROM media WHERE relative_path LIKE '%.pdf'",
+    )[0][0]
+
+    execute(db, "UPDATE media SET page_count = 507 WHERE id = ?", (media_id,))
+
+    scan_library(library, db, verbose=False)
+
+    assert query(
+        db, "SELECT page_count FROM media WHERE id = ?", (media_id,)
+    ) == [(507,)]
+
+
+def test_page_count_invalide_si_la_taille_change(
+    library: Path, db: Path
+) -> None:
+    scan_library(library, db, verbose=False)
+
+    item = "Adobe Illustrator CS6 (Adobe Press)"
+
+    media_id, relative_path = query(
+        db,
+        """
+        SELECT m.id, m.relative_path FROM media m
+        JOIN items i ON i.id = m.item_id
+        WHERE i.title = ? AND m.relative_path LIKE '%.pdf'
+        """,
+        (item,),
+    )[0]
+
+    execute(db, "UPDATE media SET page_count = 507 WHERE id = ?", (media_id,))
+
+    (library / item / relative_path).write_bytes(b"contenu plus long")
+
+    scan_library(library, db, verbose=False)
+
+    assert query(
+        db, "SELECT page_count FROM media WHERE id = ?", (media_id,)
+    ) == [(None,)]
+
+
+def test_probe_page_count_restreint_aux_livres(
+    library: Path, db: Path, monkeypatch
+) -> None:
+    """Contrairement aux chapitres, le nombre de pages ne concerne que
+    les livres : une video/un audio, meme selectionnes pour leur duree
+    ou leurs chapitres dans la meme passe, ne doivent jamais declencher
+    probe_page_count."""
+
+    scan_library(library, db, verbose=False)
+
+    appeles = []
+
+    def spy(path):
+        appeles.append(path)
+        return None
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/ffprobe")
+    monkeypatch.setattr("library_index.probe_duration", lambda path: 42.0)
+    monkeypatch.setattr("library_index.probe_chapters", lambda path: [])
+    monkeypatch.setattr("library_index.probe_page_count", spy)
+
+    conn = connect_database(db)
+    try:
+        probe_missing_media_info(conn, library, verbose=False)
+    finally:
+        conn.close()
+
+    # Un seul appel : celui pour le PDF (media_type 'book') - jamais
+    # pour les videos/audios, pourtant selectionnes dans la meme passe.
+    assert len(appeles) == 1
+    assert appeles[0].name.endswith(".pdf")
+
+
+def test_reprobe_remet_page_count_a_zero(library: Path, db: Path) -> None:
+    # Vérifie la vraie fonction appelée par --reprobe (reset_probed_media),
+    # pas une copie de son SQL : sinon ce test resterait vert même si on
+    # oubliait un jour d'y ajouter une future colonne sondée.
+    scan_library(library, db, verbose=False)
+
+    media_id = query(
+        db, "SELECT id FROM media WHERE relative_path LIKE '%.pdf'"
+    )[0][0]
+    execute(db, "UPDATE media SET page_count = 507 WHERE id = ?", (media_id,))
+
+    conn = connect_database(db)
+    try:
+        reset_probed_media(conn)
+    finally:
+        conn.close()
+
+    assert query(
+        db, "SELECT page_count FROM media WHERE id = ?", (media_id,)
+    ) == [(None,)]
+
+
+# --------------------------------------------------------------------
 # Migration de schema
 # --------------------------------------------------------------------
 
@@ -790,6 +910,7 @@ def test_migration_depuis_schema_v1(library: Path, db: Path) -> None:
         "duration_seconds",
         "probed_at",
         "chapters_probed_at",
+        "page_count",
     } <= colonnes
     assert query(db, "SELECT version FROM schema_info") == [(SCHEMA_VERSION,)]
 
@@ -800,6 +921,7 @@ def test_migration_depuis_schema_v1(library: Path, db: Path) -> None:
         )
     }
     assert "media_chapters" in tables
+    assert "preferences" in tables
 
     # Le media prealable garde son id 1, donc sa progression.
     assert query(

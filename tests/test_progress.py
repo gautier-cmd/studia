@@ -32,8 +32,10 @@ from studia import (  # noqa: E402
     create_app,
     fetch_item_media_progress,
     format_clock,
+    is_book_completed,
     is_video_completed,
     resolve_hero_cta,
+    resolve_resume_page,
     resolve_resume_seconds,
     resolve_watch_target_media_id,
     split_leading_number,
@@ -206,9 +208,15 @@ def library(tmp_path: Path) -> Path:
     make_file(audiobook / "livre-audio.m4b")
 
     # Un PDF seul (sans video ni audio) devient media_type 'book' :
-    # aucun lecteur pour ce type, message "format illisible" attendu.
+    # lisible par /read depuis la tranche "Lecteur PDF".
     book = root / "Adobe Illustrator CS6 (Adobe Press)"
     make_file(book / "livre.pdf")
+
+    # Un livre dans un format que BOOK_EXTENSIONS reconnaît mais que
+    # /read ne sait pas ouvrir (EPUB) : message "format illisible"
+    # toujours attendu pour celui-ci, contrairement au PDF ci-dessus.
+    epub_book = root / "Un livre EPUB (Auteur)"
+    make_file(epub_book / "livre.epub")
 
     # Aucune extension video/audio/book : item_type "document", donc
     # zero ligne dans `media` - le cas vise par la garde de vacuite.
@@ -289,6 +297,31 @@ def set_chapters(client, media_id: int, chapters: list[tuple]) -> None:
             [(media_id, *chapitre) for chapitre in chapters],
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def set_page_count(client, media_id: int, page_count: int | None) -> None:
+    db_path = client.application.config["DB_PATH"]
+    conn = sqlite3.connect(db_path)
+
+    try:
+        conn.execute(
+            "UPDATE media SET page_count = ? WHERE id = ?",
+            (page_count, media_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fetch_preferences(client):
+    db_path = client.application.config["DB_PATH"]
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    try:
+        return conn.execute("SELECT * FROM preferences WHERE user_id = 1").fetchone()
     finally:
         conn.close()
 
@@ -902,16 +935,31 @@ def test_hero_sans_voir_les_ressources(client) -> None:
         assert "Voir les ressources" not in data
 
 
-def test_hero_livre_sans_bouton_principal_menu_seul(client) -> None:
-    # Pas de lecteur pour un livre : plus de repli sur "Voir les
-    # ressources" comme avant, le menu ⋮ reste la seule action du hero.
+def test_hero_livre_pdf_recoit_son_bouton_principal(client) -> None:
+    # Depuis la tranche "Lecteur PDF" : un livre PDF a désormais un
+    # lecteur, donc un bouton principal comme les autres types - plus
+    # de message "format illisible" pour celui-ci.
     item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    data = client.get(f"/item/{item_id}").data.decode()
+
+    assert "ne peut pas encore être lu" not in data
+    assert '<div class="hero-actions">' in data
+    assert f'href="/read/{media_id}"' in data
+    assert "▶ Commencer" in data
+
+
+def test_hero_livre_non_pdf_sans_bouton_principal_menu_seul(client) -> None:
+    # Un format que /read ne sait pas ouvrir (EPUB) : toujours pas de
+    # lecteur, le menu ⋮ reste la seule action du hero - comportement
+    # inchangé pour ce cas, contrairement au PDF ci-dessus.
+    item_id = item_id_by_title(client, "Un livre EPUB (Auteur)")
     data = client.get(f"/item/{item_id}").data.decode()
 
     assert "ne peut pas encore être lu" in data
     assert 'class="hero-menu"' in data
     # Pas de <div class="hero-actions"> vide : absente, pas juste sans
-    # enfant - aucun bouton principal à afficher pour un livre.
+    # enfant - aucun bouton principal à afficher pour ce livre.
     assert '<div class="hero-actions">' not in data
 
 
@@ -1530,7 +1578,7 @@ def test_message_format_illisible_absent_pour_audiobook(client) -> None:
 
 
 def test_message_format_illisible_present_pour_un_livre(client) -> None:
-    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    item_id = item_id_by_title(client, "Un livre EPUB (Auteur)")
     response = client.get(f"/item/{item_id}")
 
     assert "ne peut pas encore être lu" in response.data.decode()
@@ -1685,3 +1733,392 @@ def test_pas_de_bouton_recommencer_sur_listen(client) -> None:
 
     assert "Recommencer depuis le début" not in data
     assert "reset-progress" not in data
+
+
+# --------------------------------------------------------------------
+# Livre : lecteur PDF, progression en pages
+# --------------------------------------------------------------------
+
+
+def test_is_book_completed_derniere_page_atteinte() -> None:
+    assert is_book_completed(305, 305) is True
+    assert is_book_completed(304, 305) is False
+    # Pas de seuil de pourcentage comme pour les médias temporels
+    # (voir is_video_completed) : 304/305 est très proche de la fin
+    # mais n'est pas la dernière page.
+
+
+def test_is_book_completed_sans_page_count_jamais_termine() -> None:
+    # pdfinfo en échec (ou livre pas encore sondé) : rien à comparer,
+    # jamais "terminé".
+    assert is_book_completed(999, None) is False
+    assert is_book_completed(999, 0) is False
+
+
+def test_resolve_resume_page_reprend_la_page_enregistree() -> None:
+    row = {"page_number": 128, "completed": 0}
+    assert resolve_resume_page(row) == 128
+
+
+def test_resolve_resume_page_termine_repart_de_la_premiere_page() -> None:
+    row = {"page_number": 305, "completed": 1}
+    assert resolve_resume_page(row) is None
+
+
+def test_resolve_resume_page_jamais_ouvert() -> None:
+    assert resolve_resume_page(None) is None
+
+
+def test_build_progress_summary_line_livre() -> None:
+    assert (
+        build_progress_summary_line(
+            "book", 42, 0, 0, None, None, page_number=128, page_count=305
+        )
+        == f"42{NBSP}% · page{NBSP}128 sur 305"
+    )
+
+
+def test_compute_item_progress_percent_livre_continu() -> None:
+    assert (
+        compute_item_progress_percent(
+            "book",
+            [{"completed": False, "page_number": 128, "page_count": 305}],
+        )
+        == 42
+    )
+
+
+def test_compute_item_progress_percent_livre_termine_vaut_100(client) -> None:
+    # Terminé force 100%, même si page_number enregistré serait
+    # légèrement inférieur (index/annexes lus après la "dernière page"
+    # qui a déclenché "terminé", ou simple retour en arrière ensuite).
+    assert (
+        compute_item_progress_percent(
+            "book",
+            [{"completed": True, "page_number": 300, "page_count": 305}],
+        )
+        == 100
+    )
+
+
+def test_fetch_item_media_progress_livre_avec_page_count(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+    client.post(f"/media/{media_id}/progress", data={"page_number": "128"})
+
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    db_path = client.application.config["DB_PATH"]
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        progress = fetch_item_media_progress(conn, item_id, "book")
+    finally:
+        conn.close()
+
+    assert progress["status"] == "in_progress"
+    assert progress["percent"] == 42
+
+
+def test_fetch_item_media_progress_livre_sans_page_count(client) -> None:
+    # Correction demandée : sans page_count connu (pdfinfo en échec),
+    # aucune progression n'est calculable ni affichable - jamais un
+    # pourcentage sur une valeur absente, même si des pages ont bien
+    # été enregistrées.
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    client.post(f"/media/{media_id}/progress", data={"page_number": "128"})
+
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    db_path = client.application.config["DB_PATH"]
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        progress = fetch_item_media_progress(conn, item_id, "book")
+    finally:
+        conn.close()
+
+    assert progress == {"status": "not_started", "percent": 0}
+
+
+def test_fiche_livre_sans_page_count_aucune_barre_ni_texte(client) -> None:
+    # Même vérification que le test précédent, mais au niveau du rendu
+    # complet de la fiche : ni barre, ni texte, ni "Tout recommencer" -
+    # comme si le livre n'avait jamais été ouvert, jamais un message
+    # d'erreur.
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    client.post(f"/media/{media_id}/progress", data={"page_number": "128"})
+
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    data = client.get(f"/item/{item_id}").data.decode()
+
+    assert "hero-progress" not in data
+    assert "Tout recommencer" not in data
+    assert "▶ Commencer" in data
+
+
+def test_fiche_livre_avec_page_count_affiche_barre_et_texte(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+    client.post(f"/media/{media_id}/progress", data={"page_number": "128"})
+
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    data = client.get(f"/item/{item_id}").data.decode()
+
+    assert "hero-progress" in data
+    assert f"42{NBSP}% · page{NBSP}128 sur 305" in data
+    assert "▶ Continuer" in data
+    assert "Tout recommencer" in data
+
+
+def test_carte_grille_affiche_pourcentage_du_livre(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+    client.post(f"/media/{media_id}/progress", data={"page_number": "128"})
+
+    data = client.get("/").data.decode()
+
+    # _progress_bar.html utilise un espace normal ici (comportement
+    # existant, partagé par tous les types - non spécifique au livre,
+    # hors périmètre de cette tranche).
+    assert "42 %" in data
+
+
+def test_route_read_rend_le_lecteur_pdf(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    response = client.get(f"/read/{media_id}")
+    data = response.data.decode()
+
+    assert response.status_code == 200
+    assert "vendor/pdfjs/pdf.mjs" in data
+    assert "vendor/pdfjs/pdf.worker.mjs" in data
+    assert "vendor/pdfjs/cmaps/" in data
+    assert "vendor/pdfjs/standard_fonts/" in data
+    # Jamais de CDN externe pour PDF.js - application hors ligne.
+    assert "cdn." not in data
+
+
+def test_lecteur_pdf_conteneur_borne_et_observateurs_sur_ce_conteneur(client) -> None:
+    # Non-régression sur le gabarit rendu, même principe que le
+    # garde-fou "played" du lecteur vidéo : pas de navigateur dans
+    # cette suite pour vérifier le défilement réel. Les pages défilent
+    # dans #reader-viewport (hauteur bornée en JS, défilement interne -
+    # même mécanisme que .playlist du lecteur vidéo), plus sur la page
+    # entière : la sidebar, le fil d'Ariane, le titre et la barre
+    # d'outils doivent rester visibles. root: viewport (pas null) sur
+    # les deux IntersectionObserver est le point précis à ne pas
+    # casser : sans lui, ils calculeraient l'intersection par rapport à
+    # la fenêtre, qui ne défile plus, et plus aucune page ne se
+    # rendrait ni ne s'enregistrerait comme "la plus visible" pour la
+    # reprise.
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert "applyViewportBounds" in data
+    assert "root: viewport" in data
+    assert "root: null" not in data
+
+
+def test_lecteur_pdf_suspend_le_suivi_de_visibilite_pendant_le_repositionnement(
+    client,
+) -> None:
+    # Découvert en vérifiant la correction ci-dessus : reconstruire
+    # #reader-pages (changement de zoom, de mode, navigation) vide
+    # brièvement le conteneur, dont le défilement revient alors à 0
+    # avant que scrollIntoView ne le replace - si l'observateur de
+    # visibilité se déclenche pendant cette fenêtre, il enregistre à
+    # tort la page 1 comme "la plus visible" et écrase la vraie
+    # position. suppressVisibilityBriefly() suspend l'observateur le
+    # temps du repositionnement ; goToPage et renderScrollAround
+    # enregistrent eux-mêmes la page visée, immédiatement, sans
+    # attendre l'observateur.
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert "suppressVisibilityBriefly" in data
+    assert "suppressVisibilityUntil" in data
+
+
+def test_lecteur_pdf_espace_les_pages_sur_reader_pages(client) -> None:
+    # Le flex/gap qui sépare visuellement les pages en défilement
+    # continu doit être posé sur #reader-pages (le conteneur direct des
+    # .reader-page), pas sur #reader-viewport : celui-ci n'a qu'un seul
+    # enfant flex (#reader-pages), donc un gap posé dessus n'a aucun
+    # effet visible entre les pages. Vérifié ici via le CSS servi, pas
+    # via le gabarit (la règle vit dans static/style.css).
+    css_path = Path(__file__).resolve().parent.parent / "static" / "style.css"
+    css = css_path.read_text(encoding="utf-8")
+
+    reader_pages_rule = css.split("#reader-pages {", 1)[1].split("}", 1)[0]
+    assert "gap" in reader_pages_rule
+    assert "display: flex" in reader_pages_rule
+
+    reader_viewport_rule = css.split(".reader-viewport {", 1)[1].split("}", 1)[0]
+    assert "gap" not in reader_viewport_rule
+
+
+def test_lecteur_pdf_page_par_page_revient_en_haut_au_changement_de_page(
+    client,
+) -> None:
+    # En mode page par page, une page plus haute que l'écran ne doit
+    # jamais s'ouvrir à l'ancienne position de défilement de la page
+    # précédente. renderPaginated (seule fonction qui affiche une
+    # nouvelle page en mode paginé - Suivant/Précédent, clavier, champ
+    # de saisie du numéro de page passent tous par elle) doit remettre
+    # #reader-viewport en haut. Sans effet sur le suivi de visibilité :
+    # renderPaginated déconnecte déjà les deux IntersectionObserver
+    # avant ce reset, donc ce repositionnement ne peut pas être
+    # interprété comme un changement de page à enregistrer.
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert "viewport.scrollTop = 0" in data
+    render_paginated = data.split("function renderPaginated(", 1)[1].split(
+        "\n    }\n", 1
+    )[0]
+    assert "renderObserver.disconnect()" in render_paginated
+    assert "visibilityObserver.disconnect()" in render_paginated
+    assert "viewport.scrollTop = 0" in render_paginated
+
+
+def test_route_read_refuse_un_livre_non_pdf(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.epub")
+
+    assert client.get(f"/read/{media_id}").status_code == 404
+
+
+def test_route_read_refuse_une_video(client) -> None:
+    media_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+
+    assert client.get(f"/read/{media_id}").status_code == 404
+
+
+def test_route_read_reprend_a_la_page_enregistree(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+    client.post(f"/media/{media_id}/progress", data={"page_number": "128"})
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert "var resumePage = 128;" in data
+
+
+def test_route_read_livre_termine_repart_de_la_premiere_page(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+    client.post(f"/media/{media_id}/progress", data={"page_number": "305"})
+    assert fetch_progress_row(client, media_id)["completed"] == 1
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert "var resumePage = 1;" in data
+
+
+def test_ecriture_progression_livre_page_zero_refusee(client) -> None:
+    # Une page 0 n'existe pas (contrairement à une position de 0
+    # seconde, valide pour une vidéo) - ramenée à 1 par
+    # save_book_progress plutôt que rejetée, mais jamais stockée telle
+    # quelle.
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    client.post(f"/media/{media_id}/progress", data={"page_number": "0"})
+
+    assert fetch_progress_row(client, media_id)["page_number"] == 1
+
+
+def test_ecriture_progression_livre_sans_page_number_400(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+
+    response = client.post(f"/media/{media_id}/progress", data={})
+
+    assert response.status_code == 400
+
+
+def test_terminer_livre_ne_redescend_jamais(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+    client.post(f"/media/{media_id}/progress", data={"page_number": "305"})
+    assert fetch_progress_row(client, media_id)["completed"] == 1
+
+    client.post(f"/media/{media_id}/progress", data={"page_number": "10"})
+
+    row = fetch_progress_row(client, media_id)
+    assert row["page_number"] == 10
+    assert row["completed"] == 1
+
+
+def test_reset_progress_livre_relance_la_lecture(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+    client.post(f"/media/{media_id}/progress", data={"page_number": "128"})
+
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    response = client.post(f"/item/{item_id}/reset-progress")
+
+    assert response.status_code in (302, 303)
+    assert response.headers["Location"] == f"/read/{media_id}"
+    assert fetch_progress_row(client, media_id) is None
+
+
+# --- Préférences de lecture (mode, zoom) --------------------------------
+
+
+def test_preferences_par_defaut_sans_ligne(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert "var mode = \"scroll\";" in data
+
+
+def test_enregistrement_du_mode_de_lecture(client) -> None:
+    response = client.post("/preferences", data={"reading_mode": "paginated"})
+
+    assert response.status_code == 204
+    assert fetch_preferences(client)["reading_mode"] == "paginated"
+
+
+def test_enregistrement_du_zoom_seul_ne_touche_pas_le_mode(client) -> None:
+    client.post("/preferences", data={"reading_mode": "paginated"})
+    client.post("/preferences", data={"reading_zoom": "1.5"})
+
+    row = fetch_preferences(client)
+    assert row["reading_mode"] == "paginated"
+    assert row["reading_zoom"] == 1.5
+
+
+def test_enregistrement_du_mode_seul_ne_touche_pas_le_zoom(client) -> None:
+    client.post("/preferences", data={"reading_zoom": "1.5"})
+    client.post("/preferences", data={"reading_mode": "paginated"})
+
+    row = fetch_preferences(client)
+    assert row["reading_zoom"] == 1.5
+    assert row["reading_mode"] == "paginated"
+
+
+def test_mode_de_lecture_invalide_400(client) -> None:
+    response = client.post("/preferences", data={"reading_mode": "n_importe_quoi"})
+
+    assert response.status_code == 400
+
+
+def test_preferences_sont_globales_pas_par_livre(client) -> None:
+    # Un seul réglage pour toute l'application (décidé avec Gautier) :
+    # deux livres ouverts successivement voient le même mode/zoom, il
+    # n'y a rien à identifier par item dans /preferences.
+    client.post("/preferences", data={"reading_mode": "paginated", "reading_zoom": "2.0"})
+
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert "var mode = \"paginated\";" in data
+    assert "var zoom = 2.0;" in data

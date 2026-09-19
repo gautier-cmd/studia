@@ -1755,6 +1755,99 @@ audio {
     overflow: hidden;
 }
 
+/* Lecteur PDF (book_reader.html). Une seule colonne (.main), sans
+   second panneau : pas de sommaire, pas de notes dans cette tranche. */
+.reader-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-12);
+    margin-bottom: var(--space-16);
+    padding: var(--space-8) var(--space-12);
+    background: var(--color-surface);
+    border-radius: var(--radius-md);
+}
+
+.reader-toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+}
+
+.reader-toolbar .btn-mini[aria-pressed="true"] {
+    background: var(--color-accent);
+    color: var(--color-bg);
+}
+
+.reader-toolbar .btn-mini[aria-pressed="false"] {
+    background: var(--color-surface-2);
+    color: var(--color-text);
+}
+
+.reader-page-field {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-annotation);
+}
+
+#reader-page-input {
+    width: 56px;
+    text-align: center;
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text);
+    padding: var(--space-4);
+    font: inherit;
+}
+
+/* Hauteur bornée à la hauteur visible, défilement interne - même
+   mécanisme que .playlist du lecteur vidéo (voir static/style.css,
+   tranche "Progression visible et liste de lecture"), pas un second :
+   seule cette zone défile, jamais la page entière, pour que la
+   sidebar, le fil d'Ariane, le titre et la barre d'outils restent
+   visibles en permanence. max-height posé en JS (book_reader.html,
+   applyViewportBounds) : dépend de la hauteur variable du titre et de
+   la barre d'outils au-dessus, pas une valeur calculable en pur CSS
+   ici (contrairement à .playlist, qui n'a rien d'autre au-dessus
+   d'elle dans sa propre colonne).
+   Fond neutre + espace entre les pages, dans l'esprit des lecteurs PDF
+   courants (Chrome, Adobe) : chaque page reste blanche et se détache
+   de ce fond par son ombre (.reader-page), jamais par une ligne
+   dessinée. */
+.reader-viewport {
+    padding: var(--space-24) var(--space-16);
+    background: var(--color-border);
+    border-radius: var(--radius-md);
+    overflow-y: auto;
+}
+
+/* .reader-page est un enfant de #reader-pages, pas de .reader-viewport :
+   le flex/gap doit être posé ici, sinon il ne s'applique qu'à
+   #reader-pages lui-même (unique enfant flex de .reader-viewport) et
+   les pages restent visuellement soudées les unes aux autres. */
+#reader-pages {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-20);
+}
+
+.reader-page {
+    background: #fff;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+    max-width: 100%;
+}
+
+.reader-page canvas {
+    display: block;
+    max-width: 100%;
+    height: auto;
+}
+
 /* Tablette (720–1119px) : toujours côte à côte, mais le programme
    prend moins de place pour laisser de la place à la vidéo — le
    chapitre courant reste repliable comme sur desktop (point 30 de la

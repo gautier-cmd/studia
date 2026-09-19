@@ -21,7 +21,7 @@ from offlineu_core import (
     SUBTITLE_EXTENSIONS,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 PROBE_TIMEOUT_SECONDS = 60
 PROBE_COMMIT_EVERY = 50
@@ -185,6 +185,13 @@ def create_schema(conn: sqlite3.Connection) -> None:
             UNIQUE(media_id, chapter_index),
             FOREIGN KEY(media_id) REFERENCES media(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS preferences (
+            user_id INTEGER PRIMARY KEY,
+            reading_mode TEXT NOT NULL DEFAULT 'scroll',
+            reading_zoom REAL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
         """
     )
 
@@ -229,6 +236,7 @@ def migrate_schema(conn: sqlite3.Connection) -> list[str]:
             ("duration_seconds", "REAL"),
             ("probed_at", "TEXT"),
             ("chapters_probed_at", "TEXT"),
+            ("page_count", "INTEGER"),
         ],
         "resources": [
             ("parent_path", "TEXT NOT NULL DEFAULT ''"),
@@ -373,13 +381,13 @@ def upsert_media(
     L'id stable est ce qui permet a progress.media_id de survivre
     a un rescan.
 
-    La duree et l'examen des chapitres sont conserves tant que la
-    taille du fichier ne bouge pas. Si elle change, le fichier n'est
-    plus le meme : ces deux informations redeviennent NULL pour etre
-    resondees - et les lignes de media_chapters deja stockees, qui
-    decriraient alors un fichier qui n'existe plus, sont effacees
-    tout de suite plutot que de rester affichees, fausses, jusqu'au
-    prochain --probe.
+    La duree, l'examen des chapitres et le nombre de pages sont
+    conserves tant que la taille du fichier ne bouge pas. Si elle
+    change, le fichier n'est plus le meme : ces informations
+    redeviennent NULL pour etre resondees - et les lignes de
+    media_chapters deja stockees, qui decriraient alors un fichier qui
+    n'existe plus, sont effacees tout de suite plutot que de rester
+    affichees, fausses, jusqu'au prochain --probe.
     """
 
     existant = conn.execute(
@@ -419,6 +427,11 @@ def upsert_media(
             chapters_probed_at = CASE
                 WHEN media.size_bytes = excluded.size_bytes
                 THEN media.chapters_probed_at
+                ELSE NULL
+            END,
+            page_count = CASE
+                WHEN media.size_bytes = excluded.size_bytes
+                THEN media.page_count
                 ELSE NULL
             END,
             size_bytes = excluded.size_bytes
@@ -728,22 +741,76 @@ def probe_chapters(file_path: Path) -> list[dict]:
     return chapitres
 
 
+def probe_page_count(file_path: Path) -> int | None:
+    """Nombre de pages d'un PDF, lu par pdfinfo (poppler-utils, deja
+    utilise par covers.py pour l'extraction de couverture - aucune
+    nouvelle dependance). Renvoie None si l'outil est absent, si le
+    fichier n'est pas lisible ou ne declare aucun nombre de pages -
+    y compris pour un livre qui n'est pas un PDF (EPUB, MOBI...),
+    que pdfinfo ne sait de toute facon pas lire.
+    """
+
+    try:
+        resultat = subprocess.run(
+            ["pdfinfo", str(file_path)],
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+    for ligne in resultat.stdout.splitlines():
+        if ligne.startswith("Pages:"):
+            try:
+                pages = int(ligne.split(":", 1)[1].strip())
+            except ValueError:
+                return None
+            return pages if pages > 0 else None
+
+    return None
+
+
+def reset_probed_media(conn: sqlite3.Connection) -> None:
+    """Oublie tout ce que --probe a mesuré, pour tout resonder au
+    prochain scan avec --reprobe : durée, chapitres et nombre de
+    pages. Les trois colonnes ensemble, jamais une seule oubliée -
+    sinon --reprobe ne pourrait plus jamais forcer le réexamen de
+    celle laissée de côté.
+    """
+
+    conn.execute(
+        """
+        UPDATE media
+        SET duration_seconds = NULL, probed_at = NULL,
+            chapters_probed_at = NULL, page_count = NULL
+        """
+    )
+    conn.commit()
+
+
 def probe_missing_media_info(
     conn: sqlite3.Connection,
     library_root: Path,
     verbose: bool = True,
 ) -> tuple[int, int, int]:
-    """Sonde la duree et/ou les chapitres des medias pas encore examines.
+    """Sonde la duree, les chapitres et/ou le nombre de pages des medias
+    pas encore examines.
 
-    Un media est repris s'il lui manque l'une des deux informations
-    (chacune independamment de l'autre) - aucun filtre de type : une
-    video peut porter des chapitres au meme titre qu'un audio,
-    chapters_probed_at doit dire ce qui a ete examine, pas ce qui est
-    affiche aujourd'hui (seul /listen montre une colonne de chapitres
-    pour l'instant).
+    Un media est repris s'il lui manque au moins une des informations
+    qui le concernent (chacune independamment des autres). Aucun
+    filtre de type pour la duree et les chapitres : une video peut
+    porter des chapitres au meme titre qu'un audio, chapters_probed_at
+    doit dire ce qui a ete examine, pas ce qui est affiche aujourd'hui
+    (seul /listen montre une colonne de chapitres pour l'instant). Le
+    nombre de pages, lui, ne concerne que les livres (page_count n'a
+    aucun sens pour une video/un audio et pdfinfo y echouerait a coup
+    sur) : restreint a media_type = 'book' pour ne pas resonder en vain
+    tout le reste de la bibliotheque a chaque --probe.
 
     Renvoie (durees lues avec succes, fichiers ou au moins un chapitre
-    a ete trouve, nombre total de medias examines).
+    a ete trouve, fichiers dont le nombre de pages a ete lu, nombre
+    total de medias examines).
     """
 
     if shutil.which("ffprobe") is None:
@@ -758,12 +825,15 @@ def probe_missing_media_info(
             m.id,
             i.library_path,
             m.relative_path,
+            m.media_type,
             m.duration_seconds,
-            m.chapters_probed_at
+            m.chapters_probed_at,
+            m.page_count
         FROM media m
         JOIN items i ON i.id = m.item_id
         WHERE m.duration_seconds IS NULL
            OR m.chapters_probed_at IS NULL
+           OR (m.media_type = 'book' AND m.page_count IS NULL)
         ORDER BY i.library_path, m.sort_order
         """
     ).fetchall()
@@ -771,6 +841,7 @@ def probe_missing_media_info(
     total = len(rows)
     durees_reussies = 0
     avec_chapitres = 0
+    pages_lues = 0
 
     for index, row in enumerate(rows, start=1):
         file_path = library_root / row["library_path"] / row["relative_path"]
@@ -824,6 +895,17 @@ def probe_missing_media_info(
                 (now_iso(), row["id"]),
             )
 
+        if row["media_type"] == "book" and row["page_count"] is None:
+            pages = probe_page_count(file_path)
+
+            if pages is not None:
+                pages_lues += 1
+
+            conn.execute(
+                "UPDATE media SET page_count = ? WHERE id = ?",
+                (pages, row["id"]),
+            )
+
         if index % PROBE_COMMIT_EVERY == 0:
             conn.commit()
 
@@ -832,7 +914,7 @@ def probe_missing_media_info(
 
     conn.commit()
 
-    return durees_reussies, avec_chapitres, total
+    return durees_reussies, avec_chapitres, pages_lues, total
 
 
 def scan_library(
@@ -897,16 +979,17 @@ def scan_library(
 
         if probe:
             if verbose:
-                print("Analyse des durées et des chapitres par ffprobe…")
+                print("Analyse des durées, chapitres et pages par ffprobe/pdfinfo…")
 
-            durees_reussies, avec_chapitres, total = probe_missing_media_info(
+            durees_reussies, avec_chapitres, pages_lues, total = probe_missing_media_info(
                 conn, library_root, verbose
             )
 
             if verbose:
                 print(
                     f"Durées lues : {durees_reussies}/{total} — "
-                    f"fichiers avec chapitres : {avec_chapitres}"
+                    f"fichiers avec chapitres : {avec_chapitres} — "
+                    f"livres avec pages lues : {pages_lues}"
                 )
 
     finally:
@@ -1003,13 +1086,13 @@ def main() -> None:
     parser.add_argument(
         "--probe",
         action="store_true",
-        help="lire la durée et les chapitres des médias avec ffprobe",
+        help="lire la durée, les chapitres et le nombre de pages des médias",
     )
 
     parser.add_argument(
         "--reprobe",
         action="store_true",
-        help="oublier les durées et chapitres connus et tout resonder",
+        help="oublier durées, chapitres et pages connus et tout resonder",
     )
 
     parser.add_argument(
@@ -1030,14 +1113,7 @@ def main() -> None:
         conn = connect_database(args.database)
 
         try:
-            conn.execute(
-                """
-                UPDATE media
-                SET duration_seconds = NULL, probed_at = NULL,
-                    chapters_probed_at = NULL
-                """
-            )
-            conn.commit()
+            reset_probed_media(conn)
 
         finally:
             conn.close()

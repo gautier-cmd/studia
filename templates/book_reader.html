@@ -1,0 +1,495 @@
+{% extends "_base.html" %}
+
+{% block title %}{{ book_title }} - Studia{% endblock %}
+
+{% block body_class %}page-player page-reader{% endblock %}
+
+{% block active_nav %}library{% endblock %}
+
+{% block content %}
+<div class="layout">
+    <div class="main">
+        <a class="back" href="{{ url_for('item_detail', item_id=media['item_id']) }}">← {{ media['item_title'] }}</a>
+        <h1>{{ book_title }}</h1>
+
+        <div class="reader-toolbar">
+            <div class="reader-toolbar-group" role="group" aria-label="Mode d'affichage">
+                <button type="button" class="btn-mini" id="reader-mode-scroll" aria-pressed="false">Défilement</button>
+                <button type="button" class="btn-mini" id="reader-mode-paginated" aria-pressed="false">Page par page</button>
+            </div>
+
+            <div class="reader-toolbar-group reader-page-nav" role="group" aria-label="Navigation par page">
+                <button type="button" class="btn-mini" id="reader-prev-page" aria-label="Page précédente">←</button>
+                <label class="reader-page-field">
+                    <input type="number" id="reader-page-input" min="1" value="1" inputmode="numeric">
+                    <span>/ <span id="reader-page-total">—</span></span>
+                </label>
+                <button type="button" class="btn-mini" id="reader-next-page" aria-label="Page suivante">→</button>
+            </div>
+
+            <div class="reader-toolbar-group reader-zoom" role="group" aria-label="Zoom">
+                <button type="button" class="btn-mini" id="reader-zoom-out" aria-label="Réduire le zoom">−</button>
+                <span id="reader-zoom-level" class="hint">100 %</span>
+                <button type="button" class="btn-mini" id="reader-zoom-in" aria-label="Agrandir le zoom">+</button>
+            </div>
+        </div>
+
+        <div id="reader-viewport" class="reader-viewport">
+            <div id="reader-pages"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+    // Lecteur PDF - PDF.js servi localement (static/vendor/pdfjs/),
+    // jamais depuis un CDN : Studia est une application hors ligne.
+    import * as pdfjsLib from "{{ url_for('static', filename='vendor/pdfjs/pdf.mjs') }}";
+
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "{{ url_for('static', filename='vendor/pdfjs/pdf.worker.mjs') }}";
+
+    var CMAP_URL = "{{ url_for('static', filename='vendor/pdfjs/cmaps/') }}";
+    var STANDARD_FONTS_URL = "{{ url_for('static', filename='vendor/pdfjs/standard_fonts/') }}";
+
+    var mediaId = {{ media['id'] | tojson }};
+    var pdfUrl = {{ url_for('media_file', media_id=media['id']) | tojson }};
+    var resumePage = {{ (resume_page or 1) | tojson }};
+    var mode = {{ reading_mode | tojson }};
+    // Multiplicateur par-dessus le calcul automatique (largeur
+    // disponible bornée par la hauteur d'écran) - jamais une largeur en
+    // pixels figée, qui serait fausse sur un autre écran ou un autre
+    // livre (voir CLAUDE.md, tranche "Lecteur PDF").
+    var zoom = {{ (reading_zoom or 1.0) | tojson }};
+
+    var viewport = document.getElementById('reader-viewport');
+    var pagesContainer = document.getElementById('reader-pages');
+    var pageInput = document.getElementById('reader-page-input');
+    var pageTotalLabel = document.getElementById('reader-page-total');
+    var zoomLevelLabel = document.getElementById('reader-zoom-level');
+    var modeScrollBtn = document.getElementById('reader-mode-scroll');
+    var modePaginatedBtn = document.getElementById('reader-mode-paginated');
+    var prevPageBtn = document.getElementById('reader-prev-page');
+    var nextPageBtn = document.getElementById('reader-next-page');
+    var zoomInBtn = document.getElementById('reader-zoom-in');
+    var zoomOutBtn = document.getElementById('reader-zoom-out');
+
+    var pdfDocument = null;
+    var pageCount = 0;
+    var fitScale = 1;
+    var pageEntries = [];
+    var currentPage = resumePage;
+    var renderedOnce = false;
+
+    function clampPage(n) {
+        return Math.max(1, Math.min(n, pageCount || 1));
+    }
+
+    function updateZoomLabel() {
+        zoomLevelLabel.textContent = Math.round(zoom * 100) + ' %';
+    }
+
+    function updatePageFields() {
+        pageInput.value = currentPage;
+        pageTotalLabel.textContent = pageCount || '—';
+        prevPageBtn.disabled = currentPage <= 1;
+        nextPageBtn.disabled = currentPage >= pageCount;
+    }
+
+    function updateModeButtons() {
+        modeScrollBtn.setAttribute('aria-pressed', String(mode === 'scroll'));
+        modePaginatedBtn.setAttribute('aria-pressed', String(mode === 'paginated'));
+        viewport.dataset.mode = mode;
+    }
+
+    // --- Sauvegarde de la page courante --------------------------------
+    // Même filet que les lecteurs vidéo/audio : intervalle + fermeture
+    // d'onglet, plus à chaque changement de page réel (pas à chaque
+    // pixel défilé).
+    var lastSavedPage = null;
+
+    function savePage(useBeacon) {
+        if (!currentPage || currentPage === lastSavedPage) {
+            return;
+        }
+        lastSavedPage = currentPage;
+        var body = new URLSearchParams({page_number: currentPage});
+
+        if (useBeacon && navigator.sendBeacon) {
+            navigator.sendBeacon(
+                '/media/' + mediaId + '/progress',
+                new Blob([body.toString()], {type: 'application/x-www-form-urlencoded'})
+            );
+            return;
+        }
+
+        fetch('/media/' + mediaId + '/progress', {method: 'POST', body: body});
+    }
+
+    var saveTimer = setInterval(function () { savePage(false); }, 30000);
+
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'hidden') {
+            savePage(true);
+        }
+    });
+    window.addEventListener('pagehide', function () {
+        savePage(true);
+    });
+
+    // --- Préférences (mode, zoom) ---------------------------------------
+    // Réglages de l'application, jamais du livre (voir CLAUDE.md) - un
+    // anti-rebond sur le zoom : la molette/les boutons peuvent déclencher
+    // plusieurs crans par seconde, l'écriture ne part qu'une fois le
+    // réglage stabilisé (même principe que la sauvegarde différée des
+    // notes, _note_widget.html).
+    function savePreference(fields) {
+        var body = new URLSearchParams(fields);
+        fetch('/preferences', {method: 'POST', body: body});
+    }
+
+    var zoomSaveTimer = null;
+    function scheduleZoomSave() {
+        clearTimeout(zoomSaveTimer);
+        zoomSaveTimer = setTimeout(function () {
+            savePreference({reading_zoom: zoom});
+        }, 900);
+    }
+
+    function setMode(newMode) {
+        if (newMode === mode) {
+            return;
+        }
+        mode = newMode;
+        updateModeButtons();
+        savePreference({reading_mode: mode});
+        if (mode === 'paginated') {
+            renderPaginated(currentPage);
+        } else {
+            renderScrollAround(currentPage);
+        }
+    }
+
+    function setZoom(newZoom) {
+        zoom = Math.max(0.25, Math.min(newZoom, 4));
+        updateZoomLabel();
+        scheduleZoomSave();
+        rerenderAtCurrentZoom();
+    }
+
+    // --- Hauteur bornée à la hauteur visible, défilement interne -----
+    // Même mécanisme que .playlist du lecteur vidéo (voir CLAUDE.md,
+    // tranche "Lecteur PDF") : seule cette zone défile, jamais la page
+    // entière - sinon la sidebar, le fil d'Ariane, le titre et la
+    // barre d'outils défilent avec le contenu et disparaissent dès
+    // qu'on descend dans un livre de plusieurs centaines de pages.
+    // Calculé en JS (pas un calc() CSS fixe comme pour .playlist) : la
+    // hauteur du titre et de la barre d'outils au-dessus varie (un ou
+    // deux mots, barre qui peut passer à la ligne), contrairement à
+    // .playlist qui n'a rien d'autre au-dessus d'elle dans sa colonne.
+    var VIEWPORT_PADDING = 16;
+    var VIEWPORT_BOTTOM_MARGIN = 20;
+
+    function computeAvailableHeight() {
+        var top = viewport.getBoundingClientRect().top;
+        return Math.max(200, window.innerHeight - top - VIEWPORT_BOTTOM_MARGIN);
+    }
+
+    function applyViewportBounds() {
+        viewport.style.maxHeight = computeAvailableHeight() + 'px';
+    }
+
+    // --- Calcul de la taille par défaut -----------------------------
+    // Largeur disponible sans jamais dépasser la hauteur de l'écran -
+    // comportement par défaut de Chrome pour un PDF, pris comme
+    // référence. Calculé une fois sur la première page (l'immense
+    // majorité des PDF gardent la même taille de page tout du long) :
+    // une page réellement différente corrige sa propre hauteur au
+    // moment de son rendu, sans bloquer le calcul initial.
+    function computeFitScale(page) {
+        var base = page.getViewport({scale: 1});
+        var availableWidth = viewport.clientWidth - 2 * VIEWPORT_PADDING;
+        var availableHeight = computeAvailableHeight() - 2 * VIEWPORT_PADDING;
+        var widthScale = availableWidth / base.width;
+        var heightScale = availableHeight / base.height;
+        return Math.max(0.1, Math.min(widthScale, heightScale));
+    }
+
+    function ensureEntry(pageNumber) {
+        var entry = pageEntries[pageNumber - 1];
+        if (entry) {
+            return entry;
+        }
+        var container = document.createElement('div');
+        container.className = 'reader-page';
+        container.dataset.pageNumber = String(pageNumber);
+        var canvas = document.createElement('canvas');
+        container.appendChild(canvas);
+        entry = {container: container, canvas: canvas, rendered: false, renderTask: null};
+        pageEntries[pageNumber - 1] = entry;
+        return entry;
+    }
+
+    function renderPageInto(pageNumber, entry) {
+        if (entry.renderTask) {
+            return entry.renderTask;
+        }
+        entry.renderTask = pdfDocument.getPage(pageNumber).then(function (page) {
+            var scale = fitScale * zoom;
+            var pageViewport = page.getViewport({scale: scale});
+            var canvas = entry.canvas;
+            var context = canvas.getContext('2d');
+            canvas.width = pageViewport.width;
+            canvas.height = pageViewport.height;
+            canvas.style.width = pageViewport.width + 'px';
+            canvas.style.height = pageViewport.height + 'px';
+            entry.container.style.width = pageViewport.width + 'px';
+            entry.container.style.height = pageViewport.height + 'px';
+            return page.render({canvasContext: context, viewport: pageViewport}).promise.then(function () {
+                entry.rendered = true;
+                entry.renderTask = null;
+            });
+        });
+        return entry.renderTask;
+    }
+
+    // --- Mode défilement continu, rendu progressif -------------------
+    // Un IntersectionObserver déclenche le rendu réel d'une page quand
+    // elle approche de l'écran (marge de préchargement), plutôt que de
+    // dessiner d'un coup les 500 pages d'un gros livre - et une seconde
+    // observation, sans marge, détermine la page la plus visible pour
+    // la reprise ("la page enregistrée est la plus visible à l'écran").
+    // root: viewport (pas null/la fenêtre) : les pages défilent dans
+    // #reader-viewport, pas dans la page - sans ce root explicite, les
+    // deux observateurs calculeraient l'intersection par rapport à la
+    // fenêtre du navigateur, jamais satisfaite puisque la page ne
+    // défile plus du tout, et plus aucune page ne se rendrait ni ne
+    // s'enregistrerait comme "la plus visible".
+    var renderObserver = null;
+    var visibilityObserver = null;
+    var visibleRatios = {};
+
+    // Un changement de zoom/mode vide puis reconstruit #reader-pages
+    // (ci-dessous) : le conteneur, provisoirement presque vide, voit
+    // son défilement revenir à 0 le temps de la reconstruction, avant
+    // que scrollIntoView ne le replace au bon endroit. Si
+    // l'observateur de visibilité se déclenche pendant cette fenêtre,
+    // il rapporte à tort la page 1 comme "la plus visible" et
+    // écraserait la vraie position - découvert en vérifiant cette
+    // correction : la position enregistrée dérivait vers 1 à chaque
+    // changement de zoom. Une navigation explicite (ci-dessous,
+    // goToPage/renderScrollAround) enregistre donc toujours la page
+    // elle-même, immédiatement, et suspend l'observateur le temps que
+    // le repositionnement se stabilise - lui ne sert plus qu'à suivre
+    // un défilement naturel (molette, barre de défilement).
+    var SUPPRESS_VISIBILITY_MS = 700;
+    var suppressVisibilityUntil = 0;
+
+    function suppressVisibilityBriefly() {
+        suppressVisibilityUntil = Date.now() + SUPPRESS_VISIBILITY_MS;
+    }
+
+    function setupObservers() {
+        if (renderObserver) {
+            renderObserver.disconnect();
+        }
+        if (visibilityObserver) {
+            visibilityObserver.disconnect();
+        }
+        visibleRatios = {};
+
+        renderObserver = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+                if (entry.isIntersecting) {
+                    var pageNumber = parseInt(entry.target.dataset.pageNumber, 10);
+                    renderPageInto(pageNumber, pageEntries[pageNumber - 1]);
+                }
+            });
+        }, {root: viewport, rootMargin: '1000px 0px 1000px 0px'});
+
+        visibilityObserver = new IntersectionObserver(function (entries) {
+            if (Date.now() < suppressVisibilityUntil) {
+                return;
+            }
+            entries.forEach(function (entry) {
+                var pageNumber = parseInt(entry.target.dataset.pageNumber, 10);
+                visibleRatios[pageNumber] = entry.isIntersecting ? entry.intersectionRatio : 0;
+            });
+            var best = null;
+            var bestRatio = 0;
+            Object.keys(visibleRatios).forEach(function (key) {
+                if (visibleRatios[key] > bestRatio) {
+                    bestRatio = visibleRatios[key];
+                    best = parseInt(key, 10);
+                }
+            });
+            if (best) {
+                currentPage = best;
+                updatePageFields();
+                savePage(false);
+            }
+        }, {root: viewport, threshold: [0, 0.25, 0.5, 0.75, 1]});
+    }
+
+    function renderScrollAround(targetPage) {
+        suppressVisibilityBriefly();
+        pagesContainer.innerHTML = '';
+        pageEntries = [];
+        setupObservers();
+
+        for (var n = 1; n <= pageCount; n++) {
+            var entry = ensureEntry(n);
+            pagesContainer.appendChild(entry.container);
+            renderObserver.observe(entry.container);
+            visibilityObserver.observe(entry.container);
+        }
+
+        // Applique tout de suite la taille estimée (page 1) à chaque
+        // conteneur, pour que la hauteur totale - donc la position de
+        // défilement vers targetPage - soit correcte avant même qu'une
+        // seule page ne soit dessinée.
+        pdfDocument.getPage(1).then(function (page) {
+            var base = page.getViewport({scale: fitScale * zoom});
+            pageEntries.forEach(function (entry) {
+                if (!entry.rendered) {
+                    entry.container.style.width = base.width + 'px';
+                    entry.container.style.height = base.height + 'px';
+                }
+            });
+            currentPage = clampPage(targetPage);
+            var target = pageEntries[currentPage - 1];
+            if (target) {
+                target.container.scrollIntoView({block: 'start'});
+            }
+            updatePageFields();
+            savePage(false);
+            suppressVisibilityBriefly();
+        });
+    }
+
+    function renderPaginated(targetPage) {
+        pagesContainer.innerHTML = '';
+        if (renderObserver) { renderObserver.disconnect(); }
+        if (visibilityObserver) { visibilityObserver.disconnect(); }
+
+        currentPage = clampPage(targetPage);
+        var entry = ensureEntry(currentPage);
+        pageEntries = [];
+        pageEntries[currentPage - 1] = entry;
+        pagesContainer.appendChild(entry.container);
+        // Chaque page affichée en mode page par page doit s'ouvrir en
+        // haut, jamais à l'ancienne position de défilement de la page
+        // précédente : sans ce reset, une page plus haute que l'écran
+        // hérite du scrollTop laissé par la page d'avant. On le refait
+        // une fois le rendu terminé, car la hauteur réelle du canevas
+        // n'est connue qu'à ce moment-là (voir renderPageInto).
+        viewport.scrollTop = 0;
+        renderPageInto(currentPage, entry).then(function () {
+            viewport.scrollTop = 0;
+        });
+        updatePageFields();
+        savePage(false);
+    }
+
+    function rerenderAtCurrentZoom() {
+        if (!pdfDocument) {
+            return;
+        }
+        if (mode === 'paginated') {
+            renderPaginated(currentPage);
+        } else {
+            renderScrollAround(currentPage);
+        }
+    }
+
+    function goToPage(n) {
+        var target = clampPage(n);
+        if (mode === 'paginated') {
+            renderPaginated(target);
+            return;
+        }
+        suppressVisibilityBriefly();
+        currentPage = target;
+        updatePageFields();
+        savePage(false);
+        var entry = pageEntries[target - 1];
+        if (entry) {
+            entry.container.scrollIntoView({block: 'start', behavior: 'smooth'});
+        }
+    }
+
+    // --- Réglages des contrôles ---------------------------------------
+    modeScrollBtn.addEventListener('click', function () { setMode('scroll'); });
+    modePaginatedBtn.addEventListener('click', function () { setMode('paginated'); });
+
+    prevPageBtn.addEventListener('click', function () { goToPage(currentPage - 1); });
+    nextPageBtn.addEventListener('click', function () { goToPage(currentPage + 1); });
+
+    pageInput.addEventListener('change', function () {
+        var value = parseInt(pageInput.value, 10);
+        if (!Number.isNaN(value)) {
+            goToPage(value);
+        }
+    });
+
+    zoomInBtn.addEventListener('click', function () { setZoom(zoom + 0.1); });
+    zoomOutBtn.addEventListener('click', function () { setZoom(zoom - 0.1); });
+
+    // Flèches au clavier, seulement en mode page par page (voir
+    // CLAUDE.md) - en défilement continu, les flèches n'ont pas de
+    // sens propre au-delà du défilement natif du navigateur.
+    document.addEventListener('keydown', function (event) {
+        if (mode !== 'paginated') {
+            return;
+        }
+        if (event.target && (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA')) {
+            return;
+        }
+        if (event.key === 'ArrowLeft') {
+            goToPage(currentPage - 1);
+        } else if (event.key === 'ArrowRight') {
+            goToPage(currentPage + 1);
+        }
+    });
+
+    // --- Chargement -----------------------------------------------------
+    applyViewportBounds();
+
+    pdfjsLib.getDocument({
+        url: pdfUrl,
+        cMapUrl: CMAP_URL,
+        cMapPacked: true,
+        standardFontDataUrl: STANDARD_FONTS_URL
+    }).promise.then(function (pdf) {
+        pdfDocument = pdf;
+        pageCount = pdf.numPages;
+        currentPage = clampPage(resumePage);
+
+        return pdf.getPage(1).then(function (page) {
+            applyViewportBounds();
+            fitScale = computeFitScale(page);
+            updateZoomLabel();
+            updateModeButtons();
+            updatePageFields();
+
+            if (mode === 'paginated') {
+                renderPaginated(currentPage);
+            } else {
+                renderScrollAround(currentPage);
+            }
+        });
+    });
+
+    window.addEventListener('resize', function () {
+        applyViewportBounds();
+        if (!pdfDocument) {
+            return;
+        }
+        pdfDocument.getPage(1).then(function (page) {
+            fitScale = computeFitScale(page);
+            rerenderAtCurrentZoom();
+        });
+    });
+</script>
+{% endblock %}

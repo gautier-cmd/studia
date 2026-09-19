@@ -43,9 +43,28 @@ mimetypes.add_type("video/3gpp2", ".3g2")
 
 BOOK_ITEM_TYPES = ("book", "audiobook")
 
+# Extension du seul format de livre lisible par le lecteur PDF - un
+# item "book" peut contenir n'importe quelle extension de
+# BOOK_EXTENSIONS (EPUB, MOBI, CBZ...), pas seulement du PDF.
+READABLE_BOOK_EXTENSION = ".pdf"
+
 # Type de média suivi par la progression selon le type d'item - un
-# livre ou un document n'en ont aucun pour l'instant (pas de lecteur).
-TRACKED_PROGRESS_MEDIA_TYPE = {"course": "video", "audiobook": "audio"}
+# document n'en a aucun pour l'instant (pas de lecteur).
+TRACKED_PROGRESS_MEDIA_TYPE = {
+    "course": "video",
+    "audiobook": "audio",
+    "book": "book",
+}
+
+
+def is_readable_book_media(media_type: str, extension: str) -> bool:
+    """Un média 'book' n'est lisible par /read que s'il s'agit d'un
+    PDF - un item livre peut aussi bien contenir un EPUB ou un MOBI
+    (voir BOOK_EXTENSIONS, offlineu_core.py), que le lecteur ne sait
+    pas encore ouvrir. Vrai sans condition pour tout autre type
+    (vidéo, audio), qui n'est jamais concerné par cette restriction."""
+
+    return media_type != "book" or extension == READABLE_BOOK_EXTENSION
 
 BADGE_LABELS = {
     "course": "FORMATION",
@@ -238,15 +257,15 @@ def build_meta_line(*segments: str | None) -> str:
 
 
 def fetch_playable_media(conn, media_id: int):
-    """Media jouable (vidéo ou audio), avec le chemin de bibliothèque
-    et le titre de son item.
+    """Media jouable (vidéo, audio, ou livre PDF), avec le chemin de
+    bibliothèque et le titre de son item.
 
-    None si l'id n'existe pas ou si ce n'est ni une vidéo ni un audio
-    (ex. un livre, media_type 'book', pas encore de lecteur) : cette
-    fonction sert de garde commune à /watch, /listen, au service de
-    fichier et à l'écriture de la progression. Chaque route vérifie en
-    plus son propre media_type (une vidéo ne s'ouvre pas via /listen,
-    et inversement).
+    None si l'id n'existe pas, ou si c'est un format sans lecteur (un
+    document, ou un livre qui n'est pas un PDF - EPUB, MOBI... voir
+    is_readable_book_media) : cette fonction sert de garde commune à
+    /watch, /listen, /read, au service de fichier et à l'écriture de
+    la progression. Chaque route vérifie en plus son propre
+    media_type (une vidéo ne s'ouvre pas via /listen, et inversement).
     """
 
     return conn.execute(
@@ -258,13 +277,18 @@ def fetch_playable_media(conn, media_id: int):
             media.media_type,
             media.extension,
             media.duration_seconds,
+            media.page_count,
             items.title AS item_title,
             items.library_path
         FROM media
         JOIN items ON items.id = media.item_id
-        WHERE media.id = ? AND media.media_type IN ('video', 'audio')
+        WHERE media.id = ?
+          AND (
+            media.media_type IN ('video', 'audio')
+            OR (media.media_type = 'book' AND media.extension = ?)
+          )
         """,
-        (media_id,),
+        (media_id, READABLE_BOOK_EXTENSION),
     ).fetchone()
 
 
@@ -317,11 +341,12 @@ def save_video_progress(
 
 
 def fetch_media_progress(conn, media_id: int):
-    """Ligne de progression d'un média (position_seconds, completed),
-    ou None si jamais ouvert."""
+    """Ligne de progression d'un média (position_seconds, page_number,
+    completed), ou None si jamais ouvert."""
 
     return conn.execute(
-        "SELECT position_seconds, completed FROM progress WHERE media_id = ? AND user_id = ?",
+        "SELECT position_seconds, page_number, completed FROM progress "
+        "WHERE media_id = ? AND user_id = ?",
         (media_id, LOCAL_USER_ID),
     ).fetchone()
 
@@ -397,6 +422,118 @@ def resolve_resume_seconds(progress_row) -> int | None:
         return None
 
     return int(progress_row["position_seconds"])
+
+
+def is_book_completed(page_number: int | None, page_count: int | None) -> bool:
+    """Règle du "terminé" pour un livre : la dernière page a été
+    atteinte - pas un seuil de pourcentage comme pour les médias
+    temporels (voir is_video_completed). Décidé avec Gautier : un PDF
+    a une vraie dernière page, contrairement à une vidéo dont on ne
+    voit jamais la fin exacte ; et un livre finit souvent par un index
+    ou des annexes qu'on ne lit pas, un seuil à 95% marquerait
+    "terminé" un livre lu aux trois-quarts. Ces deux règles du
+    "terminé" cohabitent délibérément (voir CLAUDE.md).
+
+    Sans page_count connu (pdfinfo en échec, ou livre pas encore
+    sondé), jamais "terminé" : rien à comparer - le livre reste
+    lisible normalement, seule cette coche est indisponible (voir
+    save_book_progress et fetch_item_media_progress)."""
+
+    if not page_count or page_number is None:
+        return False
+
+    return page_number >= page_count
+
+
+def save_book_progress(
+    conn, media_id: int, page_number: int, page_count: int | None
+) -> None:
+    """Enregistre la page courante et calcule "terminé" à partir du
+    nombre de pages connu côté serveur (jamais envoyé par le client).
+
+    Même règle de non-régression que save_video_progress :
+    "completed" ne redescend jamais (MAX dans la requête) - revenir en
+    arrière dans un livre déjà terminé continue de mettre à jour
+    page_number, mais ne retire pas la coche.
+    """
+
+    page_number = max(1, page_number)
+    completed = 1 if is_book_completed(page_number, page_count) else 0
+
+    conn.execute(
+        """
+        INSERT INTO progress (user_id, media_id, page_number, completed, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, media_id) DO UPDATE SET
+            page_number = excluded.page_number,
+            completed = MAX(progress.completed, excluded.completed),
+            updated_at = excluded.updated_at
+        """,
+        (LOCAL_USER_ID, media_id, page_number, completed, now_iso()),
+    )
+    conn.commit()
+
+
+def resolve_resume_page(progress_row) -> int | None:
+    """Page à proposer pour la reprise automatique - même principe que
+    resolve_resume_seconds : la page enregistrée tant que le livre
+    n'est pas terminé ; un livre déjà terminé repart de la première
+    page si on le rouvre, comme un média temporel terminé repart du
+    début."""
+
+    if progress_row is None or progress_row["completed"]:
+        return None
+
+    if progress_row["page_number"] is None:
+        return None
+
+    return progress_row["page_number"]
+
+
+READING_MODES = ("scroll", "paginated")
+DEFAULT_READING_MODE = "scroll"
+
+
+def fetch_reading_preferences(conn) -> dict:
+    """Réglages du lecteur PDF (mode de défilement, niveau de zoom) -
+    un seul réglage pour toute l'application, jamais par livre (décidé
+    avec Gautier). Valeurs par défaut si aucune ligne n'existe encore
+    (avant le premier réglage explicite), pas d'erreur."""
+
+    row = conn.execute(
+        "SELECT reading_mode, reading_zoom FROM preferences WHERE user_id = ?",
+        (LOCAL_USER_ID,),
+    ).fetchone()
+
+    if row is None:
+        return {"reading_mode": DEFAULT_READING_MODE, "reading_zoom": None}
+
+    return {"reading_mode": row["reading_mode"], "reading_zoom": row["reading_zoom"]}
+
+
+def save_reading_preferences(
+    conn, reading_mode: str | None = None, reading_zoom: float | None = None
+) -> None:
+    """Met à jour un seul des deux réglages à la fois si l'appelant ne
+    fournit que celui-ci - la valeur non fournie garde celle déjà en
+    base plutôt que d'être effacée (un changement de zoom ne doit pas
+    réinitialiser le mode choisi, et inversement)."""
+
+    current = fetch_reading_preferences(conn)
+    mode = reading_mode if reading_mode is not None else current["reading_mode"]
+    zoom = reading_zoom if reading_zoom is not None else current["reading_zoom"]
+
+    conn.execute(
+        """
+        INSERT INTO preferences (user_id, reading_mode, reading_zoom)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            reading_mode = excluded.reading_mode,
+            reading_zoom = excluded.reading_zoom
+        """,
+        (LOCAL_USER_ID, mode, zoom),
+    )
+    conn.commit()
 
 
 def resolve_watch_target_media_id(
@@ -481,10 +618,17 @@ def compute_item_progress_percent(item_type: str, media_progress: list[dict]) ->
       L'objection ci-dessus ne s'applique pas ici : il n'y a qu'un
       seul fichier, donc aucune coche intermédiaire à faire
       correspondre à un pourcentage qui bougerait "trop tôt".
+    - livre (book) : page courante / nombre total de pages, en continu
+      - même raisonnement que l'audiobook (un seul fichier). Appelant
+      responsable de ne pas invoquer cette branche sans page_count
+      connu (voir fetch_item_media_progress) : le pourcentage d'un
+      livre n'est jamais calculé sur une valeur absente.
 
     media_progress : une entrée par média suivi de l'item, chacune
     {"completed": bool, "position_seconds": float | None,
-    "duration_seconds": float | None}.
+    "duration_seconds": float | None} (course/audiobook) ou
+    {"completed": bool, "page_number": int | None,
+    "page_count": int | None} (book).
     """
 
     if not media_progress:
@@ -505,6 +649,14 @@ def compute_item_progress_percent(item_type: str, media_progress: list[dict]) ->
         )
         return round(min(total_position / total_duration, 1.0) * 100)
 
+    if item_type == "book":
+        m = media_progress[0]
+        page_count = m["page_count"]
+        if not page_count:
+            return 0
+        page_number = m["page_count"] if m["completed"] else min(m["page_number"] or 0, page_count)
+        return round(min(page_number / page_count, 1.0) * 100)
+
     total = len(media_progress)
     completed_count = sum(1 for m in media_progress if m["completed"])
     return round(completed_count / total * 100)
@@ -517,6 +669,8 @@ def build_progress_summary_line(
     tracked_count: int,
     position_seconds: float | None,
     duration_seconds: float | None,
+    page_number: int | None = None,
+    page_count: int | None = None,
 ) -> str:
     """Ligne affichée sous la barre de progression du hero (fiche) -
     le pourcentage vient toujours de compute_item_progress_percent,
@@ -526,7 +680,11 @@ def build_progress_summary_line(
     dialogue "Tout recommencer" (0/1 singulier, 2+ pluriel). Audiobook :
     "42 % · 1 h 12 sur 3 h 05" - un seul fichier n'a pas de vidéos à
     compter, la position et la durée disent la même chose plus
-    directement.
+    directement. Livre : "42 % · page 128 sur 305" - la page courante,
+    pas un décompte de pages lues : page_number est déjà une position,
+    contrairement à completed_count qui compte des vidéos terminées.
+    Appelant responsable de ne pas invoquer cette branche sans
+    page_count connu (voir fetch_item_media_progress).
     """
 
     if item_type == "audiobook":
@@ -534,6 +692,9 @@ def build_progress_summary_line(
             f"{percent}{NBSP}% · {format_duration(position_seconds)} sur "
             f"{format_duration(duration_seconds)}"
         )
+
+    if item_type == "book":
+        return f"{percent}{NBSP}% · page{NBSP}{page_number} sur {page_count}"
 
     plural = completed_count >= 2
     return (
@@ -577,13 +738,62 @@ def fetch_item_media_progress(conn, item_id: int, item_type: str) -> dict:
     """Statut ('not_started'/'in_progress'/'completed', voir
     aggregate_item_progress) et pourcentage (voir
     compute_item_progress_percent) d'un item, à partir du media_type
-    suivi pour son item_type (TRACKED_PROGRESS_MEDIA_TYPE) - un livre
-    ou un document n'ont encore aucune ligne ici, faute de lecteur.
+    suivi pour son item_type (TRACKED_PROGRESS_MEDIA_TYPE) - un
+    document n'a encore aucune ligne ici, faute de lecteur.
     """
 
     media_type = TRACKED_PROGRESS_MEDIA_TYPE.get(item_type)
     if media_type is None:
         return {"status": "not_started", "percent": 0}
+
+    if item_type == "book":
+        # Un seul média principal par livre (voir classify_file) : pas
+        # besoin d'une liste, une seule ligne suffit. Sans page_count
+        # connu (pdfinfo en échec, livre pas encore sondé, ou pas un
+        # PDF), aucune progression n'est calculable ni affichable -
+        # jamais un pourcentage sur une valeur absente (décidé avec
+        # Gautier). Le livre reste lisible normalement (voir
+        # save_book_progress) : seule la fiche/carte n'a rien à
+        # montrer, comme s'il n'avait jamais été ouvert.
+        row = conn.execute(
+            """
+            SELECT
+                progress.completed IS NOT NULL AS has_progress,
+                COALESCE(progress.completed, 0) AS completed,
+                progress.page_number AS page_number,
+                media.page_count AS page_count
+            FROM media
+            LEFT JOIN progress
+                ON progress.media_id = media.id AND progress.user_id = ?
+            WHERE media.item_id = ? AND media.media_type = 'book'
+              AND media.extension = ?
+            LIMIT 1
+            """,
+            (LOCAL_USER_ID, item_id, READABLE_BOOK_EXTENSION),
+        ).fetchone()
+
+        if row is None or row["page_count"] is None:
+            return {"status": "not_started", "percent": 0}
+
+        status = aggregate_item_progress(
+            [(bool(row["has_progress"]), bool(row["completed"]))]
+        )
+        percent = compute_item_progress_percent(
+            item_type,
+            [
+                {
+                    "completed": bool(row["completed"]),
+                    "page_number": row["page_number"],
+                    "page_count": row["page_count"],
+                }
+            ],
+        )
+        return {
+            "status": status,
+            "percent": percent,
+            "page_number": row["page_number"],
+            "page_count": row["page_count"],
+        }
 
     rows = conn.execute(
         """
@@ -626,22 +836,33 @@ def fetch_media_progress_states(
     commencé - état par défaut, rien à afficher).
 
     media_type est le type suivi pour cet item (voir
-    TRACKED_PROGRESS_MEDIA_TYPE) ; None (livre, document) renvoie un
-    dict vide sans requête.
+    TRACKED_PROGRESS_MEDIA_TYPE) ; None (document) renvoie un dict vide
+    sans requête. Pour 'book', restreint aux PDF (voir
+    is_readable_book_media) - un livre non lisible n'a de toute façon
+    jamais de ligne progress, faute de route pour en créer une.
     """
 
     if media_type is None:
         return {}
 
+    extension_guard = (
+        "AND media.extension = :extension" if media_type == "book" else ""
+    )
     rows = conn.execute(
-        """
+        f"""
         SELECT media.id, progress.completed
         FROM media
         JOIN progress
-            ON progress.media_id = media.id AND progress.user_id = ?
-        WHERE media.item_id = ? AND media.media_type = ?
+            ON progress.media_id = media.id AND progress.user_id = :user_id
+        WHERE media.item_id = :item_id AND media.media_type = :media_type
+        {extension_guard}
         """,
-        (LOCAL_USER_ID, item_id, media_type),
+        {
+            "user_id": LOCAL_USER_ID,
+            "item_id": item_id,
+            "media_type": media_type,
+            "extension": READABLE_BOOK_EXTENSION,
+        },
     ).fetchall()
 
     return {
@@ -656,15 +877,20 @@ HERO_CTA_LABELS = {
     "completed": "Revoir",
 }
 
+HERO_CTA_ENDPOINTS = {
+    "audiobook": "listen_audio",
+    "book": "read_book",
+}
+
 
 def resolve_hero_cta(item_type: str, progress_status: str) -> tuple[str, str]:
     """Verbe et endpoint du bouton principal du hero.
 
-    Le verbe est neutre, identique pour une formation et un audiobook
+    Le verbe est neutre, identique pour tous les types
     (Commencer/Continuer/Revoir) - "Regarder", "Écouter" et "Reprendre"
     ne sont plus utilisés. Seul l'endpoint reste choisi par type."""
 
-    endpoint = "listen_audio" if item_type == "audiobook" else "watch_video"
+    endpoint = HERO_CTA_ENDPOINTS.get(item_type, "watch_video")
 
     return HERO_CTA_LABELS[progress_status], endpoint
 
@@ -1391,6 +1617,24 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                     if audio_progress is not None:
                         audiobook_position_seconds = audio_progress["position_seconds"]
 
+            # Même chose côté livre, pour "page N sur M" (résumé et
+            # boîte "Tout recommencer") - page_count reste None tant
+            # que pdfinfo ne l'a pas lu ou pour un livre non-PDF.
+            book_page_number = None
+            book_page_count = None
+            if item["item_type"] == "book":
+                book_media = conn.execute(
+                    "SELECT id, page_count FROM media WHERE item_id = ? "
+                    "AND media_type = 'book' AND extension = ? "
+                    "ORDER BY sort_order LIMIT 1",
+                    (item_id, READABLE_BOOK_EXTENSION),
+                ).fetchone()
+                if book_media is not None:
+                    book_page_count = book_media["page_count"]
+                    book_progress = fetch_media_progress(conn, book_media["id"])
+                    if book_progress is not None:
+                        book_page_number = book_progress["page_number"]
+
             # Même fonction que la carte de la grille pour le
             # pourcentage du hero - jamais un second calcul.
             item_progress = fetch_item_media_progress(conn, item_id, item["item_type"])
@@ -1406,7 +1650,9 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         chapters = build_programme_chapters(media_rows)
 
         playable_ids = [
-            m["id"] for m in media_rows if m["media_type"] == tracked_media_type
+            m["id"] for m in media_rows
+            if m["media_type"] == tracked_media_type
+            and is_readable_book_media(m["media_type"], m["extension"])
         ]
         completed_ids = {
             media_id
@@ -1416,12 +1662,19 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         first_playable_media_id = resolve_watch_target_media_id(
             playable_ids, completed_ids
         )
-        progress_status = aggregate_item_progress(
-            [
-                (media_id in progress_states, media_id in completed_ids)
-                for media_id in playable_ids
-            ]
-        )
+        if item["item_type"] == "book":
+            # Réutilise le statut déjà calculé par fetch_item_media_progress
+            # (item_progress), qui retombe sur 'not_started' sans
+            # page_count connu - jamais recalculé différemment ici, sinon
+            # la barre/le CTA pourraient se contredire sur ce cas précis.
+            progress_status = item_progress["status"]
+        else:
+            progress_status = aggregate_item_progress(
+                [
+                    (media_id in progress_states, media_id in completed_ids)
+                    for media_id in playable_ids
+                ]
+            )
         watch_label, watch_endpoint = resolve_hero_cta(
             item["item_type"], progress_status
         )
@@ -1452,6 +1705,8 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                 tracked_media_count,
                 audiobook_position_seconds,
                 total_duration,
+                page_number=book_page_number,
+                page_count=book_page_count,
             )
 
         presentation_resource = next(
@@ -1526,6 +1781,8 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             tracked_media_count=tracked_media_count,
             has_in_progress_media=has_in_progress_media,
             audiobook_position_seconds=audiobook_position_seconds,
+            book_page_number=book_page_number,
+            book_page_count=book_page_count,
             progress_percent=progress_percent,
             progress_summary_line=progress_summary_line,
             progress_status=progress_status,
@@ -1589,13 +1846,19 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             tracked_media_type = TRACKED_PROGRESS_MEDIA_TYPE.get(item["item_type"])
             first_media = None
             if tracked_media_type:
+                extension_guard = (
+                    "AND extension = ?" if tracked_media_type == "book" else ""
+                )
+                params = [item_id, tracked_media_type]
+                if tracked_media_type == "book":
+                    params.append(READABLE_BOOK_EXTENSION)
                 first_media = conn.execute(
-                    """
+                    f"""
                     SELECT id FROM media
-                    WHERE item_id = ? AND media_type = ?
+                    WHERE item_id = ? AND media_type = ? {extension_guard}
                     ORDER BY sort_order LIMIT 1
                     """,
-                    (item_id, tracked_media_type),
+                    params,
                 ).fetchone()
         finally:
             conn.close()
@@ -1603,7 +1866,12 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         if first_media is None:
             return redirect(url_for("item_detail", item_id=item_id))
 
-        watch_endpoint = "listen_audio" if tracked_media_type == "audio" else "watch_video"
+        if tracked_media_type == "audio":
+            watch_endpoint = "listen_audio"
+        elif tracked_media_type == "book":
+            watch_endpoint = "read_book"
+        else:
+            watch_endpoint = "watch_video"
 
         return redirect(url_for(watch_endpoint, media_id=first_media["id"]))
 
@@ -1878,6 +2146,64 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             format_duration=format_duration,
         )
 
+    @app.route("/read/<int:media_id>")
+    def read_book(media_id: int):
+        # Pas de note ni de repère de page dans cette tranche (voir
+        # CLAUDE.md) : contrairement à /watch et /listen, aucun bloc
+        # notes ici.
+        conn = connect_database(app.config["DB_PATH"])
+
+        try:
+            media = fetch_playable_media(conn, media_id)
+
+            if media is None or media["media_type"] != "book":
+                abort(404)
+
+            stored_progress = fetch_media_progress(conn, media_id)
+            preferences = fetch_reading_preferences(conn)
+        finally:
+            conn.close()
+
+        # Un livre terminé repart de la première page, comme un média
+        # temporel terminé repart du début (même fonction que
+        # resolve_resume_seconds, adaptée aux pages).
+        resume_page = resolve_resume_page(stored_progress)
+
+        filename = media["relative_path"].rsplit("/", 1)[-1]
+        book_title = clean_file_title(filename)
+
+        return render_template(
+            "book_reader.html",
+            media=media,
+            resume_page=resume_page,
+            reading_mode=preferences["reading_mode"],
+            reading_zoom=preferences["reading_zoom"],
+            reading_modes=READING_MODES,
+            book_title=book_title,
+        )
+
+    @app.route("/preferences", methods=["POST"])
+    def save_preferences():
+        # Réglages de l'application, jamais par livre (voir
+        # fetch_reading_preferences) : rien à identifier ici, une seule
+        # ligne pour l'utilisateur local.
+        reading_mode = request.form.get("reading_mode")
+        reading_zoom = request.form.get("reading_zoom", type=float)
+
+        if reading_mode is not None and reading_mode not in READING_MODES:
+            abort(400)
+
+        conn = connect_database(app.config["DB_PATH"])
+
+        try:
+            save_reading_preferences(
+                conn, reading_mode=reading_mode, reading_zoom=reading_zoom
+            )
+        finally:
+            conn.close()
+
+        return ("", 204)
+
     @app.route("/media/<int:media_id>/file")
     def media_file(media_id: int):
         conn = connect_database(app.config["DB_PATH"])
@@ -1904,11 +2230,6 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
 
     @app.route("/media/<int:media_id>/progress", methods=["POST"])
     def save_progress(media_id: int):
-        position_seconds = request.form.get("position_seconds", type=float)
-
-        if position_seconds is None:
-            abort(400)
-
         conn = connect_database(app.config["DB_PATH"])
 
         try:
@@ -1917,7 +2238,22 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             if media is None:
                 abort(404)
 
-            save_video_progress(conn, media_id, position_seconds, media["duration_seconds"])
+            if media["media_type"] == "book":
+                page_number = request.form.get("page_number", type=int)
+
+                if page_number is None:
+                    abort(400)
+
+                save_book_progress(conn, media_id, page_number, media["page_count"])
+            else:
+                position_seconds = request.form.get("position_seconds", type=float)
+
+                if position_seconds is None:
+                    abort(400)
+
+                save_video_progress(
+                    conn, media_id, position_seconds, media["duration_seconds"]
+                )
         finally:
             conn.close()
 

@@ -96,17 +96,20 @@ mais n'écrit pas de code et ne corrige pas une commande lui-même.
 Item (un dossier de premier niveau) contient des Media et des Resources.
 Le concept Lesson d'OfflineU est abandonné.
 
-Tables SQLite, schéma version 5 :
+Tables SQLite, schéma version 6 :
 schema_info, users, items, media, resources, progress, book_search,
-book_candidates, notes, media_chapters.
+book_candidates, notes, media_chapters, preferences.
 
     media       item_id, relative_path, parent_path, sort_order,
                 media_type, extension, size_bytes,
                 duration_seconds, probed_at, chapters_probed_at,
-                created_at
+                page_count, created_at
                 UNIQUE(item_id, relative_path)
     resources   mêmes colonnes sans durée
-    progress    UNIQUE(user_id, media_id) — jamais media_id seul
+    progress    UNIQUE(user_id, media_id) — jamais media_id seul.
+                position_seconds (vidéo/audio) et page_number (livre)
+                cohabitent dans la même table, chacun NULL pour l'autre
+                type — voir "Lecteur PDF" plus bas.
 
     media_chapters   media_id, chapter_index (brut ffprobe, jamais
                      renuméroté), title (NULL si absent du fichier),
@@ -114,6 +117,12 @@ book_candidates, notes, media_chapters.
                      UNIQUE(media_id, chapter_index)
                      FOREIGN KEY(media_id) ON DELETE CASCADE
                      — voir "Chapitres internes des M4B" plus bas
+
+    preferences   user_id (clé), reading_mode ('scroll'|'paginated'),
+                  reading_zoom (multiplicateur, NULL = zoom par
+                  défaut) — réglages du lecteur PDF, un seul par
+                  utilisateur, jamais par livre. Voir "Lecteur PDF"
+                  plus bas.
 
     book_search      item_id (clé), query, searched_at — dernière
                      recherche lancée pour un item livre
@@ -180,11 +189,17 @@ par tri naturel (10 après 9).
                             précédent/suivant, enchaînement automatique
     /listen/<media_id>      lecteur audio (M4B) : fichier unique, pas de
                             playlist ni de précédent/suivant
-    /media/<media_id>/file  sert le fichier vidéo ou audio (Range HTTP
-                            géré par Flask, permet d'avancer/reculer)
+    /read/<media_id>        lecteur PDF : défilement continu ou page par
+                            page, zoom, reprise en pages
+    /media/<media_id>/file  sert le fichier vidéo, audio ou PDF (Range
+                            HTTP géré par Flask, permet d'avancer/reculer)
 
-    POST /media/<media_id>/progress                     enregistre la position
-                                                         de lecture (vidéo ou audio)
+    POST /media/<media_id>/progress   enregistre la position de lecture
+                                       (position_seconds vidéo/audio, ou
+                                       page_number pour un livre)
+    POST /preferences                 enregistre le mode de lecture et/ou
+                                       le zoom du lecteur PDF (réglages de
+                                       l'application, pas d'un livre)
 
     POST /item/<id>/book-search                        lance une recherche
     POST /item/<id>/book-candidate/<id>/accept          valide un candidat
@@ -915,16 +930,13 @@ réutilisable comme point de départ.
 
 Lecteurs prévus, dans cet ordre : vidéo (fait), sauvegarde de la
 position de lecture (fait, voir ci-dessous), audio/M4B (fait, voir
-ci-dessous), PDF (PDF.js), EPUB. La
+ci-dessous), PDF (fait, voir "Lecteur PDF" plus bas), EPUB. La
 progression vient juste après la vidéo parce qu'elle ne se pose
 qu'une fois et sert ensuite à tous les lecteurs suivants, plutôt que
-d'être refaite à chacun. Le M4B reste avant le PDF : il partage la
-même mécanique de position (en secondes) que la vidéo, déjà posée,
-alors que le PDF progresse par page et suppose d'abord de connaître
-le nombre de pages — pas encore lu au scan (voir backlog).
+d'être refaite à chacun.
 
-Progression selon le type : secondes pour vidéo et audio, page pour PDF,
-position pour EPUB.
+Progression selon le type : secondes pour vidéo et audio, page pour un
+livre PDF (fait), position pour EPUB (pas encore fait).
 
 ### Sauvegarde de la position de lecture (vidéo, fait)
 
@@ -949,7 +961,13 @@ requêtes et une route.
   plafond évite qu'une formation de plusieurs heures exige d'atteindre
   sa toute dernière seconde (un générique de 10 minutes ne devrait pas
   empêcher indéfiniment le « terminé »), les 5 % s'appliquent tels
-  quels sous ce plafond pour une vidéo courte.
+  quels sous ce plafond pour une vidéo courte. **Cette règle est
+  propre aux médias temporels (vidéo, audio)** : un livre a sa propre
+  règle, différente et volontairement sans marge — voir
+  `is_book_completed` dans "Lecteur PDF" plus bas. Les deux règles du
+  « terminé » cohabitent délibérément dans le projet, chacune adaptée
+  à son type ; une future tranche sur un nouveau type de média ne doit
+  pas en réinventer une troisième sans y réfléchir d'abord.
 - **Coche définitive.** Une fois vraie, `completed` ne redescend
   jamais automatiquement — revenir en arrière dans une vidéo déjà
   terminée continue de mettre à jour la position, mais ne retire pas
@@ -1357,6 +1375,189 @@ sans chapitre, absence de toute colonne sur `/watch`.
 
 `pytest tests/` (199 tests) au vert.
 
+### Lecteur PDF (fait)
+
+Rend un livre PDF lisible dans l'application (`/read/<media_id>`),
+sur le modèle de `/watch` et `/listen`. Décision de données actée
+avec Gautier : la progression d'un livre se mesure en pages, jamais
+en pourcentage de temps — voir "Seuil du « terminé »" ci-dessus pour
+la cohabitation des deux règles.
+
+- **PDF.js, vendu localement.** `static/vendor/pdfjs/` (`pdf.mjs`,
+  `pdf.worker.mjs`, `cmaps/`, `standard_fonts/`, `LICENSE`) — version
+  **6.3.289**, ~5,4 Mo, 188 fichiers. Jamais un CDN : Studia est une
+  application hors ligne, une dépendance réseau la casserait.
+  `workerSrc` pointe vers le chemin local servi par Flask
+  (`static/vendor/pdfjs/pdf.worker.mjs`), et `getDocument()` reçoit
+  `cMapUrl`/`standardFontDataUrl` vers `cmaps/`/`standard_fonts/` du
+  même dossier — sans ça, un PDF en écriture non latine s'afficherait
+  en blocs vides (glyphes absents), et un PDF qui n'intègre pas ses
+  polices (cas très courant) se rendrait avec des substitutions
+  approximatives. Deux défauts invisibles sur le livre de test, visibles
+  sur une vraie bibliothèque - d'où l'exigence de les inclure dès le
+  départ plutôt que de les découvrir plus tard. Seuls `build/pdf.mjs`,
+  `build/pdf.worker.mjs`, `web/cmaps/` et `web/standard_fonts/` du zip
+  de distribution officiel sont repris : ni le visualiseur prêt à
+  l'emploi de Mozilla (`web/viewer.*`, non utilisé — Studia a son
+  propre gabarit), ni les fichiers `.map` (cartes source de débogage
+  du projet PDF.js lui-même, aucun usage ici).
+- **Progression : `progress.page_number`**, colonne présente depuis le
+  schéma d'origine mais jamais utilisée jusqu'ici. `position_seconds`
+  reste NULL pour un livre, `page_number` NULL pour une vidéo/un
+  audio — les deux cohabitent dans la même table sans opposition.
+- **`media.page_count`**, sondée par `pdfinfo` (poppler-utils, déjà
+  utilisé par `covers.py` pour les couvertures — aucune nouvelle
+  dépendance), dans la même passe que la durée et les chapitres
+  (`probe_missing_media_info`) mais restreinte à `media_type =
+  'book'` : contrairement aux chapitres (voir plus haut), compter les
+  pages d'une vidéo ou d'un audio n'a aucun sens et `pdfinfo`
+  échouerait systématiquement — inutile de resonder en vain tout le
+  reste de la bibliothèque à chaque `--probe`. Invalidée (NULL) au
+  changement de taille du fichier, comme `duration_seconds`.
+  `--reprobe` remet les trois colonnes sondées à NULL d'un coup
+  (`reset_probed_media`, fonction partagée avec le CLI et les tests -
+  jamais une copie du SQL).
+- **Sans `page_count` connu (pdfinfo en échec, livre pas encore sondé,
+  ou format non-PDF).** Décidé avec Gautier : le livre s'ouvre et se
+  lit normalement (la page couante continue de s'enregistrer), mais la
+  fiche et la carte n'affichent ni barre ni texte de progression, et le
+  livre ne peut jamais être « terminé » — jamais un pourcentage
+  calculé sur une valeur absente, jamais un message d'erreur.
+  `fetch_item_media_progress` renvoie alors exactement le même résultat
+  que « jamais ouvert » (`{"status": "not_started", "percent": 0}`),
+  qu'il y ait ou non une page enregistrée : la fiche ne fait ainsi
+  aucune distinction particulière, les gabarits existants (`{% if
+  progress_status != 'not_started' %}`) suffisent sans modification.
+- **Seul le PDF est lisible.** Un item de type « book » peut contenir
+  n'importe quelle extension de `BOOK_EXTENSIONS` (EPUB, MOBI, CBZ…),
+  pas seulement du PDF — `is_readable_book_media`
+  (`media_type != 'book' or extension == '.pdf'`) restreint
+  `fetch_playable_media`, le calcul du bouton hero et la playlist du
+  Programme à ce seul format ; un livre dans un autre format continue
+  d'afficher « Ce format ne peut pas encore être lu dans
+  l'application. », inchangé.
+- **Le hero d'un livre PDF reçoit son bouton principal**
+  (Commencer/Continuer/Revoir, endpoint `read_book`) et « Tout
+  recommencer », exactement comme les autres types, sans toucher aux
+  gabarits : les blocs `{% if progress_status != 'not_started' %}` /
+  `{% if first_playable_media_id %}` du hero ne contenaient déjà aucune
+  exclusion propre au livre, c'était l'absence de média suivi
+  (`TRACKED_PROGRESS_MEDIA_TYPE`) qui neutralisait ces blocs jusqu'ici
+  — les y ajouter suffit. La ligne de résumé : `"42 % · page 128 sur
+  305"` — la page courante, pas un décompte de pages lues comme pour
+  une formation.
+- **Préférences de lecture (mode, zoom), table `preferences`.** Un
+  seul réglage pour toute l'application, jamais par livre (décidé avec
+  Gautier). Rien n'existait déjà pour ce genre de réglage (pas de
+  session Flask, pas de cookie, pas de table settings) — vérifié avant
+  de créer celle-ci plutôt qu'un second mécanisme. Une ligne par
+  utilisateur (`user_id` clé), sur le même principe que `progress` :
+  prête sans effort pour le multi-utilisateur du backlog. Lue côté
+  serveur au rendu de `/read` (jamais de flash du mauvais mode/zoom au
+  chargement). `reading_zoom` est un multiplicateur appliqué par-dessus
+  le calcul automatique de taille, jamais une largeur en pixels figée
+  qui serait fausse sur un autre écran ou un autre livre. Écriture
+  différée côté navigateur pour le zoom (anti-rebond ~900ms, même
+  principe que la sauvegarde différée des notes) : sans ça, chaque cran
+  de la molette écrirait une ligne. Le changement de mode, lui, s'écrit
+  immédiatement (un clic, pas une rafale).
+- **Affichage.** Défilement continu par défaut : les pages
+  s'enchaînent verticalement, rendues progressivement (un
+  `IntersectionObserver` déclenche le rendu réel d'une page en
+  approchant de l'écran, avec une marge de préchargement) plutôt que
+  les 500+ pages d'un gros livre d'un coup. Taille par défaut : la
+  largeur disponible sans jamais dépasser la hauteur de l'écran (repris
+  du comportement par défaut de Chrome pour un PDF), calculée une fois
+  sur la première page — l'immense majorité des PDF gardent la même
+  taille de page tout du long. Bascule vers le mode page par page :
+  une page à l'écran, navigation par flèches à l'écran et au clavier
+  (uniquement dans ce mode — en défilement continu les flèches n'ont
+  pas de sens propre au-delà du défilement natif). Numéro de page et
+  total toujours visibles, champ pour aller directement à une page.
+  Reprise : la page enregistrée en défilement continu est la page la
+  plus visible à l'écran, déterminée par un second
+  `IntersectionObserver` (comparaison des ratios d'intersection) —
+  même mécanisme d'enregistrement (intervalle 30s + fermeture
+  d'onglet) que les lecteurs vidéo/audio. Un livre terminé repart de
+  la première page à la réouverture, comme un média temporel terminé
+  repart du début (`resolve_resume_page`, même principe que
+  `resolve_resume_seconds`).
+- **Hauteur bornée à la hauteur visible, défilement interne à
+  `#reader-viewport`** — même mécanisme que `.playlist` du lecteur
+  vidéo (voir "Progression visible et liste de lecture" plus haut),
+  jamais un second : sans lui, les 500+ pages d'un livre faisaient
+  défiler la page entière, emportant avec elles la sidebar, le fil
+  d'Ariane, le titre et la barre d'outils, qui disparaissaient dès
+  qu'on descendait dans le livre. Contrairement à `.playlist` (calc()
+  CSS fixe, rien d'autre au-dessus d'elle dans sa colonne), la hauteur
+  disponible est calculée en JS (`computeAvailableHeight`,
+  `applyViewportBounds`) : le titre et la barre d'outils au-dessus ont
+  une hauteur variable (un ou deux mots, barre qui peut passer à la
+  ligne). **Point de vigilance corrigé au passage** : les deux
+  `IntersectionObserver` (rendu progressif, page la plus visible pour
+  la reprise) doivent avoir `root: #reader-viewport`, jamais `root:
+  null` (la fenêtre) - sans ce `root` explicite, aucune page ne se
+  rendrait ni ne s'enregistrerait plus, puisque la fenêtre elle-même
+  ne défile plus du tout.
+  **Deuxième bug trouvé en vérifiant cette correction** : un
+  changement de zoom ou de mode vide puis reconstruit `#reader-pages`
+  (`renderScrollAround`), ce qui remet transitoirement le défilement du
+  conteneur à 0 avant que `scrollIntoView` ne le replace - si
+  l'observateur de visibilité se déclenchait pendant cette fenêtre, il
+  enregistrait à tort la page 1 comme "la plus visible" et écrasait la
+  vraie position (constaté : la position enregistrée dérivait vers 1 à
+  chaque zoom). `suppressVisibilityBriefly()` suspend cet observateur
+  le temps du repositionnement ; une navigation explicite (`goToPage`,
+  `renderScrollAround`) enregistre désormais elle-même la page visée,
+  immédiatement, sans attendre l'observateur - qui ne sert plus qu'à
+  suivre un défilement naturel (molette, barre de défilement).
+- **Séparation entre les pages en défilement continu**, dans l'esprit
+  des lecteurs PDF courants (Chrome, Adobe) : fond neutre
+  (`--color-border`) et espace (`gap`) autour et entre les pages,
+  chacune se détachant de ce fond par une ombre légère
+  (`.reader-page`) - jamais une ligne dessinée, jamais un numéro de
+  page flottant par-dessus. Le mode page par page réutilise le même
+  conteneur (donc le même fond), mais une seule page y est présente à
+  la fois : rien à séparer.
+  **Troisième bug trouvé en vérifiant cette correction** : le `gap`
+  était posé sur `.reader-viewport`, mais les `.reader-page` sont des
+  enfants de `#reader-pages` (le conteneur intermédiaire créé en JS),
+  pas de `.reader-viewport` directement - celui-ci n'a qu'un seul
+  enfant flex (`#reader-pages` lui-même), donc le `gap` n'avait aucun
+  effet visible entre les pages, qui restaient soudées les unes aux
+  autres malgré le fond et l'ombre corrects. Corrigé en déplaçant
+  `display: flex; flex-direction: column; align-items: center; gap:
+  var(--space-20)` (20px, l'espace demandé) sur `#reader-pages` ;
+  `.reader-viewport` ne garde que le fond, le padding et le
+  défilement interne.
+- **Repositionnement en haut de page en mode page par page.** Un
+  changement de page (Suivant/Précédent, flèches clavier, champ de
+  numéro de page - tous passent par `renderPaginated`) doit toujours
+  afficher la nouvelle page depuis son sommet, jamais depuis l'ancienne
+  position de défilement de la page précédente (sensible surtout à un
+  zoom qui rend la page plus haute que l'écran). `renderPaginated`
+  remet `viewport.scrollTop = 0`, une fois immédiatement et une
+  seconde fois une fois le rendu terminé (la hauteur réelle du canevas
+  n'est connue qu'à ce moment-là). Sans effet sur le suivi de
+  visibilité ou l'enregistrement de la position : `renderPaginated`
+  déconnecte déjà les deux `IntersectionObserver` avant ce reset, donc
+  ce repositionnement ne peut pas être interprété comme un changement
+  de page à enregistrer - le mode défilement continu (`goToPage`,
+  `renderScrollAround`, `suppressVisibilityBriefly`) n'est pas touché.
+- **Hors périmètre, explicitement, pour cette tranche.** Les notes et
+  les repères de page dans le lecteur PDF (aucun bloc notes dans
+  `book_reader.html`), le lecteur EPUB, la recherche dans le texte, le
+  sommaire interne du PDF.
+
+Vérifié à l'œil : le livre de test dans les deux modes, à zoom par
+défaut et agrandi, la reprise après fermeture, la fiche dans ses trois
+états (jamais ouvert, en cours, terminé), la grille, deux pages
+consécutives en défilement continu (séparation visible) et
+l'enchaînement de deux pages en mode page par page à un zoom où la
+page dépasse l'écran (arrivée en haut de la nouvelle page).
+
+`pytest tests/` (237 tests) au vert.
+
 ## Méthode — backlog
 
 Avant de commencer une tranche, relire le backlog et signaler les
@@ -1427,7 +1628,6 @@ backlog plus difficile à corriger sans le signaler d'abord.
   "Bloc-notes" — reste vrai pour la progression de lecture par média.)
 - Le compteur « sans durée » du résumé compte aussi les PDF, qui n'en ont
   pas. Affichage à corriger.
-- Nombre de pages des PDF.
 - Couvertures : deux étapes de l'ordre de priorité acté (voir
   « Priorité des couvertures » ci-dessus) restent non implémentées —
   l'import manuel d'image (étape 1) et la couverture Google Books si
