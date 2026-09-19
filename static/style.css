@@ -472,6 +472,12 @@ body.page-grid .header nav a:hover {
     flex-direction: column;
     align-items: flex-start;
     gap: var(--space-8);
+    position: relative;
+    /* Réserve la place du menu ⋮ (voir .hero-menu, positionné en haut
+       à droite) sur toute la hauteur du bloc, pas seulement sa
+       première ligne : sans ça, un titre qui passe à la ligne
+       repasserait sous le bouton dès sa deuxième ligne. */
+    padding-right: var(--space-48);
 }
 
 .hero-info h1 {
@@ -504,8 +510,15 @@ body.page-grid .header nav a:hover {
 /* Menu ⋮ générique (hero, bloc Notes) — jamais aussi marquant que
    l'action principale à côté : pas de fond, pas de bordure, juste le
    glyphe. */
+/* En haut à droite du hero (pas dans la rangée d'actions, retirée de
+   là - une action de maintenance, pas de lecture) : ancré à
+   .hero-info plutôt qu'à .hero, pour qu'il reste au-dessus du texte
+   même en colonne (palier smartphone), jamais au-dessus de la
+   couverture qui passe alors en premier. */
 .hero-menu {
-    position: relative;
+    position: absolute;
+    top: 0;
+    right: 0;
 }
 
 .hero-menu > summary {
@@ -623,6 +636,28 @@ dialog.modal::backdrop {
     color: var(--color-text);
 }
 
+.modal-actions {
+    display: flex;
+    gap: var(--space-8);
+    margin-top: var(--space-12);
+}
+
+/* Case obligatoire avant de pouvoir valider une action destructrice
+   (voir dialog-reset-progress) : décochée à chaque fermeture par le
+   script, jamais par défaut. */
+.modal-confirm-gate {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-8);
+    margin-top: var(--space-12);
+    font-size: var(--font-size-nav);
+    cursor: pointer;
+}
+
+.modal-confirm-gate input {
+    margin-top: 3px;
+}
+
 .modal-cover-preview {
     width: 140px;
     aspect-ratio: 3 / 4;
@@ -687,27 +722,21 @@ dialog.modal::backdrop {
         max-width: 100%;
     }
 
-    /* Les trois contrôles ne tiennent pas sur une ligne sans que leurs
-       libellés se coupent. Le CTA principal garde le menu ⋮ à côté
-       (assez de place à eux deux) ; le CTA secondaire passe seul en
-       pleine largeur en dessous, quel que soit son ordre dans le
-       gabarit (l'ordre visuel est fixé ici, pas dans le HTML). */
+    /* Le menu ⋮ n'est plus dans cette rangée (voir .hero-menu) : elle
+       ne contient plus que le CTA principal et, si présent, "Tout
+       recommencer". Le CTA principal absorbe l'espace disponible ;
+       "Tout recommencer" passe seul en pleine largeur en dessous s'il
+       ne tient pas à côté. */
     .hero-actions {
         flex-wrap: wrap;
     }
 
     .hero-actions > .btn-primary {
         flex: 1 1 auto;
-        order: 0;
         text-align: center;
     }
 
-    .hero-actions > .hero-menu {
-        order: 1;
-    }
-
     .hero-actions > .btn-secondary {
-        order: 2;
         flex: 1 1 100%;
         text-align: center;
     }
@@ -1296,6 +1325,11 @@ body.page-player .card {
     margin: var(--space-4) 0;
 }
 
+.hint strong {
+    color: var(--color-text);
+    font-weight: var(--font-weight-bold);
+}
+
 .btn-mini {
     background: var(--color-accent);
     color: var(--color-bg);
@@ -1305,6 +1339,11 @@ body.page-player .card {
     font-size: var(--font-size-annotation);
     font-weight: var(--font-weight-medium);
     cursor: pointer;
+}
+
+.btn-mini:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 .btn-mini.reject {

@@ -170,8 +170,13 @@ par tri naturel (10 après 9).
                             existe), chapitres/médias, ressources
     /watch/<media_id>       lecteur vidéo : playlist par chapitre,
                             précédent/suivant, enchaînement automatique
-    /media/<media_id>/file  sert le fichier vidéo (Range HTTP géré par
-                            Flask, permet d'avancer/reculer)
+    /listen/<media_id>      lecteur audio (M4B) : fichier unique, pas de
+                            playlist ni de précédent/suivant
+    /media/<media_id>/file  sert le fichier vidéo ou audio (Range HTTP
+                            géré par Flask, permet d'avancer/reculer)
+
+    POST /media/<media_id>/progress                     enregistre la position
+                                                         de lecture (vidéo ou audio)
 
     POST /item/<id>/book-search                        lance une recherche
     POST /item/<id>/book-candidate/<id>/accept          valide un candidat
@@ -595,10 +600,13 @@ Cinq corrections demandées par Gautier :
 3. **Bouton d'action principal** du hero : lien direct vers la première
    vidéo (`first_video_id`) si l'item en a une, sinon un bouton désactivé
    pour livre/audiobook (pas encore de lecteur audio/PDF).
-   Le libellé "Reprendre" (au lieu de "Regarder") suppose une
+   Un second libellé pour une progression déjà enregistrée suppose une
    progression enregistrée : pas encore le cas (voir backlog "sauvegarde
-   de la position de lecture"), donc seul "Regarder" est atteignable
-   pour l'instant — pas un bug, une conséquence attendue.
+   de la position de lecture"), donc un seul libellé est atteignable
+   pour l'instant — pas un bug, une conséquence attendue. (Devenu
+   depuis un choix à trois états neutres — Commencer / Continuer /
+   Revoir, identiques pour une formation et un audiobook — voir la
+   tranche du lecteur audio M4B.)
 4. **Lecteur vidéo** (`templates/video_player.html`) : la note
    (`render_note`) est remontée juste sous les boutons précédent/
    suivant, dans la même colonne que la vidéo, au lieu d'une ligne
@@ -914,11 +922,13 @@ position pour EPUB.
 
 ### Sauvegarde de la position de lecture (vidéo, fait)
 
-Écriture seule pour l'instant : aucun affichage nulle part (cartes,
-« Continuer », états de leçon, bouton « Reprendre ») — ça viendra dans
-une tranche séparée, une fois cette base posée. La table `progress`
-existait déjà au schéma (v4, jamais utilisée jusqu'ici) : rien à
-migrer, uniquement des requêtes et une route.
+Écriture seule à ce stade de cette tranche : l'affichage est venu
+ensuite, dans une tranche séparée — cartes de la grille, états de
+leçon (Programme, playlist) et bouton principal du hero montrent
+désormais la progression. Seule la section « Continuer » de la grille
+reste au backlog, non construite. La table `progress` existait déjà au
+schéma (v4, jamais utilisée jusqu'ici) : rien à migrer, uniquement des
+requêtes et une route.
 
 - **Écriture**, plusieurs déclencheurs combinés (`video_player.html`) :
   toutes les 30 secondes pendant la lecture (filet contre un plantage
@@ -972,11 +982,12 @@ migrer, uniquement des requêtes et une route.
   vraie fin, pas d'enchaînement. Le plancher porte sur la quantité
   réellement jouée, pas sur un délai depuis le chargement de la page —
   ça tient donc aussi bien sur une vidéo très courte.
-- **Bouton « Regarder ».** Vise désormais la première vidéo non
+- **Bouton principal du hero.** Vise désormais la première vidéo non
   terminée dans l'ordre du programme, ou la première vidéo de l'item
   si tout est déjà terminé — plus systématiquement la première vidéo
-  quel que soit l'état d'avancement. Le libellé reste « Regarder » :
-  le passage à « Reprendre » appartient à la tranche d'affichage.
+  quel que soit l'état d'avancement. Le libellé lui-même reste celui
+  d'avant cette tranche à ce stade : le second état (aujourd'hui
+  « Continuer ») appartient à la tranche d'affichage suivante.
 
 Non testable en pytest : le garde-fou `player.played` dépend d'un
 vrai minutage de lecture dans un navigateur, absent de cette suite de
@@ -1103,7 +1114,10 @@ backlog plus difficile à corriger sans le signaler d'abord.
   la première page du PDF possédé avant la pochette. À trancher
   lorsque cet ordre sera implémenté : soit le PDF-ressource d'un
   audiobook redevient source de couverture, soit la spécification est
-  amendée. Aucun item concerné dans la bibliothèque actuelle.
+  amendée. Aucun item concerné dans la bibliothèque de test ; concerne
+  au moins « La programmation neuro-linguistique » dans la vraie
+  bibliothèque de Gautier (PDF + M4B + ressources dans le même
+  dossier).
 - Les fichiers .mp4 des formations portent un tag `title` contenant le
   vrai titre éditorial, avec accents et apostrophes (vérifié : 307/307
   sur Copywriter et Motion Design). Ce titre diffère du nom de fichier
@@ -1112,6 +1126,13 @@ backlog plus difficile à corriger sans le signaler d'abord.
   prévoir : lecture du tag par le scanner, stockage à côté du nom de
   fichier sans le remplacer, règle de choix du titre affiché, et
   comportement pour les fichiers sans tag. Aucun renommage de fichier.
+  Le futur module d'import (voir plus bas) empêche ce décalage de se
+  reproduire pour un nouvel import — titre de tag et nom de fichier
+  viendraient de la même table validée — mais ne corrige pas
+  l'existant : la V1 refuse de réimporter un dossier déjà présent dans
+  la bibliothèque, donc les 307 fichiers actuels de Copywriter et
+  Motion Design restent concernés par cette ligne tant qu'elle n'est
+  pas traitée séparément.
 - `extract_hero_fields` retrouve l'auteur par correspondance sur le
   texte du libellé ("Auteur" ou "Formateur(s)"). Un libellé est un
   texte d'affichage, pas un identifiant : renommer `author_label` dans

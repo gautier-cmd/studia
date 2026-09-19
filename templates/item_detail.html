@@ -76,33 +76,28 @@
             <div class="hero-meta">{{ hero_meta }}</div>
             {% endif %}
 
+            {% if first_playable_media_id %}
             <div class="hero-actions">
-                {% if first_playable_media_id %}
                 <a class="btn-primary" href="{{ url_for(watch_endpoint, media_id=first_playable_media_id) }}">▶ {{ watch_label }}</a>
-                {% if resources %}
-                <button type="button" class="btn-secondary" data-tab-target="ressources">Voir les ressources</button>
+                {% if progress_status != 'not_started' %}
+                <button type="button" class="btn-secondary" data-open-dialog="dialog-reset-progress">Tout recommencer</button>
                 {% endif %}
-                {% elif resources %}
-                <button type="button" class="btn-primary" data-tab-target="ressources">Voir les ressources</button>
-                {% endif %}
-
-                <details class="hero-menu">
-                    <summary aria-label="Plus d'actions" title="Plus d'actions">⋮</summary>
-                    <div class="hero-menu-list" role="menu">
-                        {% if book %}
-                        <button type="button" class="hero-menu-item" data-open-dialog="dialog-edit" role="menuitem">Modifier les métadonnées</button>
-                        <button type="button" class="hero-menu-item" data-open-dialog="dialog-search" role="menuitem">Rechercher / actualiser les métadonnées</button>
-                        {% endif %}
-                        <button type="button" class="hero-menu-item" data-open-dialog="dialog-tech" role="menuitem">Voir les informations techniques</button>
-                        {% if progress_status != 'not_started' %}
-                        <button type="button" class="hero-menu-item" data-open-dialog="dialog-reset-progress" role="menuitem">Remettre la progression à zéro</button>
-                        {% endif %}
-                    </div>
-                </details>
             </div>
+            {% endif %}
             {% if not first_playable_media_id and item['item_type'] == 'book' %}
             <p class="hint">Ce format ne peut pas encore être lu dans l'application.</p>
             {% endif %}
+
+            <details class="hero-menu">
+                <summary aria-label="Plus d'actions" title="Plus d'actions">⋮</summary>
+                <div class="hero-menu-list" role="menu">
+                    {% if book %}
+                    <button type="button" class="hero-menu-item" data-open-dialog="dialog-edit" role="menuitem">Modifier les métadonnées</button>
+                    <button type="button" class="hero-menu-item" data-open-dialog="dialog-search" role="menuitem">Rechercher / actualiser les métadonnées</button>
+                    {% endif %}
+                    <button type="button" class="hero-menu-item" data-open-dialog="dialog-tech" role="menuitem">Voir les informations techniques</button>
+                </div>
+            </details>
         </div>
     </div>
 
@@ -210,17 +205,38 @@
     {% if progress_status != 'not_started' %}
     <dialog id="dialog-reset-progress" class="modal">
         <form method="dialog" class="modal-header">
-            <h3>Remettre la progression à zéro</h3>
+            <h3>Tout recommencer</h3>
             <button type="submit" class="modal-close" aria-label="Fermer">✕</button>
         </form>
         <p class="hint">
-            Efface la progression de lecture de « {{ item['title'] }} » —
-            les notes, les métadonnées et les fichiers ne sont pas
-            concernés. Cette action est irréversible.
+            {% if item['item_type'] == 'audiobook' %}
+            Effacer la progression de <strong>{{ item['title'] }}</strong> et
+            recommencer depuis le début ? Position actuelle :
+            {{ format_duration(audiobook_position_seconds) }}.
+            {% else %}
+            {% set plural = completed_media_count >= 2 %}
+            Effacer la progression de <strong>{{ item['title'] }}</strong> et
+            recommencer depuis le début ? {{ completed_media_count }}
+            vidéo{{ 's' if plural }} terminée{{ 's' if plural }} sur
+            {{ tracked_media_count }}.
+            {% if has_in_progress_media %}
+            La position des vidéos en cours sera aussi effacée.
+            {% endif %}
+            {% endif %}
         </p>
-        <form method="post" action="{{ url_for('reset_item_progress', item_id=item['id']) }}">
-            <button class="btn-mini reject" type="submit">Remettre à zéro</button>
-        </form>
+        {# Proposition à confirmer - voir la réponse. #}
+        <label class="modal-confirm-gate">
+            <input type="checkbox" id="confirm-reset-checkbox" data-confirm-gate="confirm-reset-button">
+            Je comprends que cette action est définitive.
+        </label>
+        <div class="modal-actions">
+            <form method="dialog">
+                <button type="submit" class="btn-mini secondary" data-close-dialog autofocus>Annuler</button>
+            </form>
+            <form method="post" action="{{ url_for('reset_item_progress', item_id=item['id']) }}">
+                <button class="btn-mini reject" type="submit" id="confirm-reset-button" disabled>Effacer et recommencer</button>
+            </form>
+        </div>
     </dialog>
     {% endif %}
 
@@ -366,14 +382,14 @@
 
     document.querySelectorAll('dialog.modal').forEach(function (dialog) {
         // Le focus revient à son bouton d'origine à la fermeture — posé
-        // sur chaque déclencheur explicite (croix, clic hors du cadre,
-        // Échap intercepté plus bas) plutôt que sur le seul évènement
-        // "close" natif, qui ne s'est pas montré fiable ici à l'usage
-        // (jamais déclenché dans nos essais, sans qu'on en comprenne la
-        // raison — gardé quand même en secours, au cas où). setTimeout(0) :
-        // on laisse la fermeture elle-même se terminer avant de redonner
-        // le focus, sinon une restauration native concurrente pourrait le
-        // reprendre juste après.
+        // sur chaque déclencheur explicite (croix, "Annuler", clic hors
+        // du cadre, Échap intercepté plus bas) plutôt que sur le seul
+        // évènement "close" natif, qui ne s'est pas montré fiable ici à
+        // l'usage (jamais déclenché dans nos essais, sans qu'on en
+        // comprenne la raison — gardé quand même en secours, au cas où).
+        // setTimeout(0) : on laisse la fermeture elle-même se terminer
+        // avant de redonner le focus, sinon une restauration native
+        // concurrente pourrait le reprendre juste après.
         function restoreFocus() {
             var opener = dialog._opener;
             if (!opener) {
@@ -382,19 +398,53 @@
             setTimeout(function () { opener.focus(); }, 0);
         }
 
+        // Bouton de validation gardé par une case à cocher obligatoire
+        // (voir dialog-reset-progress) : décochée et le bouton désactivé
+        // à chaque fermeture, pour ne jamais rester validable d'une
+        // ouverture à l'autre sans repasser par le geste. Généralisé ici
+        // plutôt que câblé pour ce seul dialogue, si un autre en a besoin
+        // un jour.
+        var gateCheckbox = dialog.querySelector('[data-confirm-gate]');
+        var gatedButton = gateCheckbox
+            && document.getElementById(gateCheckbox.getAttribute('data-confirm-gate'));
+
+        if (gateCheckbox && gatedButton) {
+            gateCheckbox.addEventListener('change', function () {
+                gatedButton.disabled = !gateCheckbox.checked;
+            });
+        }
+
+        function resetGate() {
+            if (gateCheckbox) {
+                gateCheckbox.checked = false;
+            }
+            if (gatedButton) {
+                gatedButton.disabled = true;
+            }
+        }
+
         dialog.addEventListener('click', function (event) {
             if (event.target === dialog) {
                 dialog.close();
                 restoreFocus();
+                resetGate();
             }
         });
 
-        var closeButton = dialog.querySelector('.modal-close');
-        if (closeButton) {
-            closeButton.addEventListener('click', restoreFocus);
-        }
+        // Toute façon de fermer sans valider (croix, "Annuler") : même
+        // deux boutons, un seul comportement de fermeture, marqués par
+        // le même hook plutôt que par leur classe visuelle propre.
+        dialog.querySelectorAll('.modal-close, [data-close-dialog]').forEach(function (button) {
+            button.addEventListener('click', function () {
+                restoreFocus();
+                resetGate();
+            });
+        });
 
-        dialog.addEventListener('close', restoreFocus);
+        dialog.addEventListener('close', function () {
+            restoreFocus();
+            resetGate();
+        });
 
         // Le piège de focus natif de <dialog> ne s'est pas montré fiable
         // à l'usage (Tab en fait sortir dès qu'il n'y a qu'un seul
@@ -406,6 +456,7 @@
                 event.preventDefault();
                 dialog.close();
                 restoreFocus();
+                resetGate();
                 return;
             }
             if (event.key !== 'Tab') {

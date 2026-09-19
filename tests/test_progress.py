@@ -4,7 +4,7 @@ Règles métier testées d'abord isolément (is_video_completed,
 aggregate_item_progress, resolve_resume_seconds,
 resolve_watch_target_media_id), puis via les routes qui les utilisent
 (POST /media/<id>/progress, reprise sur GET /watch/<id>, bouton
-"Regarder" sur /item/<id>).
+"Commencer" sur /item/<id>).
 
 L'écouteur "ended" du gabarit vidéo (garde-fou "played", voir
 video_player.html) n'est vérifié qu'au niveau du gabarit rendu : il
@@ -103,7 +103,7 @@ def test_resume_sans_position_enregistree() -> None:
     assert resolve_resume_seconds({"completed": 0, "position_seconds": None}) is None
 
 
-# --- resolve_watch_target_media_id : cible du bouton "Regarder" --------
+# --- resolve_watch_target_media_id : cible du bouton principal ---------
 
 
 def test_cible_regarder_aucune_video() -> None:
@@ -526,18 +526,19 @@ def test_carte_terminee_montre_100_pourcent_sans_barre(client) -> None:
 # --- Libellé du bouton hero ----------------------------------------------
 
 
-def test_bouton_hero_regarder_si_rien_commence(client) -> None:
+def test_bouton_hero_commencer_si_rien_commence(client) -> None:
     item_id = item_id_by_title(
         client, "Motion Design - la formation complete (TUTO.com)"
     )
     response = client.get(f"/item/{item_id}")
     data = response.data.decode()
 
-    assert "▶ Regarder" in data
-    assert "▶ Reprendre" not in data
+    assert "▶ Commencer" in data
+    assert "▶ Continuer" not in data
+    assert "▶ Revoir" not in data
 
 
-def test_bouton_hero_reprendre_si_en_cours(client) -> None:
+def test_bouton_hero_continuer_si_en_cours(client) -> None:
     first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
     set_duration(client, first_id, 100.0)
     client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
@@ -548,10 +549,10 @@ def test_bouton_hero_reprendre_si_en_cours(client) -> None:
     response = client.get(f"/item/{item_id}")
     data = response.data.decode()
 
-    assert "▶ Reprendre" in data
+    assert "▶ Continuer" in data
 
 
-def test_bouton_hero_regarder_si_tout_termine(client) -> None:
+def test_bouton_hero_revoir_si_tout_termine(client) -> None:
     first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
     second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
     set_duration(client, first_id, 100.0)
@@ -565,12 +566,12 @@ def test_bouton_hero_regarder_si_tout_termine(client) -> None:
     response = client.get(f"/item/{item_id}")
     data = response.data.decode()
 
-    # Tout terminé : pas de "Reprendre" (rien à reprendre), le même
-    # "Regarder" que pour une formation jamais commencée - revoir
-    # depuis le début est la même action que la première fois, et
-    # "Revoir" n'existe pas dans le vocabulaire déjà établi (Regarder,
-    # Lire, Écouter, Reprendre).
-    assert "▶ Regarder" in data
+    # Tout terminé : ni "Continuer" (rien à continuer), ni "Commencer"
+    # (déjà fait) - "Revoir" est son propre état, pas un repli sur un
+    # des deux autres verbes.
+    assert "▶ Revoir" in data
+    assert "▶ Continuer" not in data
+    assert "▶ Commencer" not in data
     assert "▶ Reprendre" not in data
 
 
@@ -657,16 +658,18 @@ def test_remise_a_zero_item_inconnu_404(client) -> None:
     assert response.status_code == 404
 
 
-def test_menu_remise_a_zero_absent_sans_progression(client) -> None:
+def test_bouton_hero_tout_recommencer_absent_sans_progression(client) -> None:
     item_id = item_id_by_title(
         client, "Motion Design - la formation complete (TUTO.com)"
     )
     response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
 
-    assert "dialog-reset-progress" not in response.data.decode()
+    assert 'id="dialog-reset-progress"' not in data
+    assert "Tout recommencer" not in data
 
 
-def test_menu_remise_a_zero_present_avec_progression(client) -> None:
+def test_bouton_hero_tout_recommencer_present_avec_progression(client) -> None:
     first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
     set_duration(client, first_id, 100.0)
     client.post(f"/media/{first_id}/progress", data={"position_seconds": "10"})
@@ -675,8 +678,254 @@ def test_menu_remise_a_zero_present_avec_progression(client) -> None:
         client, "Motion Design - la formation complete (TUTO.com)"
     )
     response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
 
-    assert "dialog-reset-progress" in response.data.decode()
+    assert "dialog-reset-progress" in data
+    # Bouton texte visible, à côté du CTA principal - pas une icône
+    # seule dans le hero (écarté par Gautier, personne ne devine ce
+    # qu'une flèche circulaire efface), et pas dans le menu ⋮.
+    assert (
+        '<button type="button" class="btn-secondary" data-open-dialog="dialog-reset-progress">Tout recommencer</button>'
+        in data
+    )
+    # Une action de lecture, plus une entrée de maintenance dans le
+    # menu ⋮ : l'ancien libellé a disparu de la page entière.
+    assert "Remettre la progression à zéro" not in data
+
+
+def test_hero_sans_voir_les_ressources(client) -> None:
+    # Retiré des trois types : l'onglet Ressources, juste en dessous,
+    # rend le bouton redondant.
+    for title in (
+        "Motion Design - la formation complete (TUTO.com)",
+        "S organiser pour reussir (David Allen)",
+        "Adobe Illustrator CS6 (Adobe Press)",
+    ):
+        item_id = item_id_by_title(client, title)
+        data = client.get(f"/item/{item_id}").data.decode()
+        assert "Voir les ressources" not in data
+
+
+def test_hero_livre_sans_bouton_principal_menu_seul(client) -> None:
+    # Pas de lecteur pour un livre : plus de repli sur "Voir les
+    # ressources" comme avant, le menu ⋮ reste la seule action du hero.
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    data = client.get(f"/item/{item_id}").data.decode()
+
+    assert "ne peut pas encore être lu" in data
+    assert 'class="hero-menu"' in data
+    # Pas de <div class="hero-actions"> vide : absente, pas juste sans
+    # enfant - aucun bouton principal à afficher pour un livre.
+    assert '<div class="hero-actions">' not in data
+
+
+def test_hero_menu_hors_de_la_rangee_actions(client) -> None:
+    # Le menu ⋮ range les fonctions de maintenance, "Tout recommencer"
+    # est une action de lecture : plus dans le même conteneur.
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "10"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    data = client.get(f"/item/{item_id}").data.decode()
+
+    hero_actions = data[
+        data.index('<div class="hero-actions">') : data.index(
+            "</div>", data.index('<div class="hero-actions">')
+        )
+    ]
+    assert "hero-menu" not in hero_actions
+
+
+def test_dialog_tout_recommencer_formation_singulier_une_video(client) -> None:
+    # Accord : "1 vidéo terminée" (singulier), pas "1 vidéos terminées".
+    # Le second média est en cours (pas terminé) : le décompte seul
+    # annoncerait "1 perte" alors qu'une position réelle sur un autre
+    # fichier va aussi disparaître - la phrase supplémentaire le dit.
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+    set_duration(client, first_id, 100.0)
+    set_duration(client, second_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+    client.post(f"/media/{second_id}/progress", data={"position_seconds": "10"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert "recommencer depuis le début ? 1\n            vidéo terminée sur\n            2." in data
+    assert "La position des vidéos en cours sera aussi effacée." in data
+
+
+def test_dialog_tout_recommencer_formation_pluriel_plusieurs_videos(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+    set_duration(client, first_id, 100.0)
+    set_duration(client, second_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+    client.post(f"/media/{second_id}/progress", data={"position_seconds": "99"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert "recommencer depuis le début ? 2\n            vidéos terminées sur\n            2." in data
+    # Aucun média "en cours" (les deux sont terminés) : pas de phrase
+    # supplémentaire, elle serait fausse ici.
+    assert "sera aussi effacée" not in data
+
+
+def test_dialog_tout_recommencer_audiobook_annonce_la_position(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_duration(client, media_id, 10800.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "4320"})
+
+    item_id = item_id_by_title(client, "S organiser pour reussir (David Allen)")
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert "dialog-reset-progress" in data
+    assert "vidéo" not in data.split('id="dialog-reset-progress"')[1].split(
+        "</dialog>"
+    )[0]
+    assert "Position actuelle :\n            1 h 12." in data
+
+
+def test_dialog_tout_recommencer_titre_en_gras_sans_guillemets(client) -> None:
+    # Des guillemets français se cassent mal sur un titre long (le
+    # fermant se retrouve seul en début de ligne suivante) : le titre
+    # est en gras à la place, sans guillemets du tout.
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "10"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert (
+        "<strong>Motion Design - la formation complete (TUTO.com)</strong>"
+        in data
+    )
+    dialog_start = data.index('id="dialog-reset-progress"')
+    dialog_html = data[dialog_start : data.index("</dialog>", dialog_start)]
+    assert "«" not in dialog_html
+    assert "»" not in dialog_html
+
+
+def test_dialog_tout_recommencer_boutons(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "10"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert "Annuler" in data
+    assert "Effacer et recommencer" in data
+    # Annulation au focus par défaut à l'ouverture de la boîte de
+    # dialogue (autofocus natif de <dialog>.showModal()).
+    assert "autofocus>Annuler</button>" in data
+
+
+def test_dialog_tout_recommencer_case_obligatoire(client) -> None:
+    # Bouton de validation désactivé tant que la case n'est pas cochée
+    # - vérifié sur le HTML initial (l'activation elle-même est du JS,
+    # non exécuté ici, voir test_dialog_case_gate_script_present).
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "10"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert '<input type="checkbox" id="confirm-reset-checkbox" data-confirm-gate="confirm-reset-button">' in data
+    assert (
+        '<button class="btn-mini reject" type="submit" id="confirm-reset-button" disabled>'
+        in data
+    )
+
+
+def test_dialog_case_obligatoire_aussi_pour_audiobook(client) -> None:
+    # Décidé : même mécanisme pour les deux types plutôt qu'une case en
+    # moins pour l'audiobook - un seul fichier reste une perte réelle
+    # (toute la position d'écoute), pas assez anodine pour justifier
+    # deux comportements de confirmation différents.
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_duration(client, media_id, 10800.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "4320"})
+
+    item_id = item_id_by_title(client, "S organiser pour reussir (David Allen)")
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert 'data-confirm-gate="confirm-reset-button"' in data
+    assert (
+        '<button class="btn-mini reject" type="submit" id="confirm-reset-button" disabled>'
+        in data
+    )
+
+
+def test_dialog_case_gate_script_present(client) -> None:
+    # Non-régression sur le gabarit rendu (même principe que le
+    # garde-fou "played") : le mécanisme qui décoche/désactive à la
+    # fermeture doit rester en place, quelle que soit la façon dont la
+    # boîte se ferme.
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert "data-confirm-gate" in data
+    assert "gatedButton.disabled = !gateCheckbox.checked" in data
+    assert "resetGate" in data
+
+
+def test_reset_item_relance_la_lecture_depuis_la_premiere_video(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+    set_duration(client, first_id, 100.0)
+    set_duration(client, second_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+    client.post(f"/media/{second_id}/progress", data={"position_seconds": "10"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.post(f"/item/{item_id}/reset-progress")
+
+    assert response.status_code in (302, 303)
+    assert response.headers["Location"] == f"/watch/{first_id}"
+    assert fetch_progress_row(client, first_id) is None
+    assert fetch_progress_row(client, second_id) is None
+
+
+def test_reset_item_relance_la_lecture_audio(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_duration(client, media_id, 10800.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "4320"})
+
+    item_id = item_id_by_title(client, "S organiser pour reussir (David Allen)")
+    response = client.post(f"/item/{item_id}/reset-progress")
+
+    assert response.status_code in (302, 303)
+    assert response.headers["Location"] == f"/listen/{media_id}"
+    assert fetch_progress_row(client, media_id) is None
 
 
 # --- compute_item_progress_percent : une règle par type -------------------
@@ -739,16 +988,18 @@ def test_pourcentage_sans_media_suivi_zero_quel_que_soit_le_type() -> None:
 # --- resolve_hero_cta : verbe et endpoint du bouton hero -------------------
 
 
-def test_hero_cta_course_regarder_puis_reprendre() -> None:
-    assert resolve_hero_cta("course", "not_started") == ("Regarder", "watch_video")
-    assert resolve_hero_cta("course", "in_progress") == ("Reprendre", "watch_video")
-    assert resolve_hero_cta("course", "completed") == ("Regarder", "watch_video")
+def test_hero_cta_course_verbes_neutres() -> None:
+    assert resolve_hero_cta("course", "not_started") == ("Commencer", "watch_video")
+    assert resolve_hero_cta("course", "in_progress") == ("Continuer", "watch_video")
+    assert resolve_hero_cta("course", "completed") == ("Revoir", "watch_video")
 
 
-def test_hero_cta_audiobook_ecouter_puis_reprendre() -> None:
-    assert resolve_hero_cta("audiobook", "not_started") == ("Écouter", "listen_audio")
-    assert resolve_hero_cta("audiobook", "in_progress") == ("Reprendre", "listen_audio")
-    assert resolve_hero_cta("audiobook", "completed") == ("Écouter", "listen_audio")
+def test_hero_cta_audiobook_memes_verbes_que_la_formation() -> None:
+    # Vocabulaire neutre, identique aux deux types - seul l'endpoint
+    # change, pas le mot.
+    assert resolve_hero_cta("audiobook", "not_started") == ("Commencer", "listen_audio")
+    assert resolve_hero_cta("audiobook", "in_progress") == ("Continuer", "listen_audio")
+    assert resolve_hero_cta("audiobook", "completed") == ("Revoir", "listen_audio")
 
 
 # --- Audiobook : progression, lecteur, bouton hero ------------------------
@@ -861,16 +1112,16 @@ def test_marker_pattern_reconnait_watch_et_listen(client) -> None:
     assert "\\/(?:watch|listen)\\/" in data
 
 
-def test_bouton_hero_ecouter_audiobook_jamais_commence(client) -> None:
+def test_bouton_hero_commencer_audiobook_jamais_commence(client) -> None:
     item_id = item_id_by_title(client, "S organiser pour reussir (David Allen)")
     response = client.get(f"/item/{item_id}")
     data = response.data.decode()
 
-    assert "▶ Écouter" in data
-    assert "▶ Reprendre" not in data
+    assert "▶ Commencer" in data
+    assert "▶ Continuer" not in data
 
 
-def test_bouton_hero_reprendre_audiobook_en_cours(client) -> None:
+def test_bouton_hero_continuer_audiobook_en_cours(client) -> None:
     media_id = media_id_by_relative_path(client, "livre-audio.m4b")
     set_duration(client, media_id, 10800.0)
     client.post(f"/media/{media_id}/progress", data={"position_seconds": "4320"})
@@ -879,7 +1130,21 @@ def test_bouton_hero_reprendre_audiobook_en_cours(client) -> None:
     response = client.get(f"/item/{item_id}")
     data = response.data.decode()
 
-    assert "▶ Reprendre" in data
+    assert "▶ Continuer" in data
+
+
+def test_bouton_hero_revoir_audiobook_termine(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_duration(client, media_id, 10800.0)
+    # Marge = min(10800*5%, 15) = 15s -> seuil a 10785s.
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "10800"})
+
+    item_id = item_id_by_title(client, "S organiser pour reussir (David Allen)")
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert "▶ Revoir" in data
+    assert "▶ Continuer" not in data
 
 
 def test_message_format_illisible_absent_pour_audiobook(client) -> None:
@@ -906,3 +1171,140 @@ def test_remise_a_zero_efface_aussi_la_progression_audio(client) -> None:
 
     assert response.status_code in (302, 303)
     assert fetch_progress_row(client, media_id) is None
+
+
+# --- Position zéro : 0 est une valeur valide, pas une valeur absente ------
+#
+# sendPosition() (video_player.html, audio_player.html) comparait
+# "!position" - en JavaScript, 0 est une valeur fausse, donc une
+# position réellement à zéro n'était jamais envoyée au serveur. Le
+# serveur, lui, distinguait déjà correctement 0 de l'absence (voir
+# save_progress : "position_seconds is None"), donc rien à changer ici
+# - seul le garde côté navigateur était en cause.
+
+
+def test_ecriture_position_zero_est_enregistree(client) -> None:
+    media_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, media_id, 100.0)
+
+    response = client.post(
+        f"/media/{media_id}/progress", data={"position_seconds": "0"}
+    )
+
+    assert response.status_code == 204
+    row = fetch_progress_row(client, media_id)
+    assert row["position_seconds"] == 0.0
+    assert row["completed"] == 0
+
+
+def test_ecriture_position_zero_audio_est_enregistree(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_duration(client, media_id, 10800.0)
+
+    response = client.post(
+        f"/media/{media_id}/progress", data={"position_seconds": "0"}
+    )
+
+    assert response.status_code == 204
+    row = fetch_progress_row(client, media_id)
+    assert row["position_seconds"] == 0.0
+
+
+def test_sendposition_ne_confond_plus_zero_et_absent(client) -> None:
+    # Non-régression sur le gabarit rendu (même principe que le
+    # garde-fou "played") : l'ancien test de vérité JS a disparu, dans
+    # les deux lecteurs.
+    video_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    audio_id = media_id_by_relative_path(client, "livre-audio.m4b")
+
+    video_data = client.get(f"/watch/{video_id}").data.decode()
+    audio_data = client.get(f"/listen/{audio_id}").data.decode()
+
+    for data in (video_data, audio_data):
+        assert "if (!position)" not in data
+        assert "typeof position !== 'number'" in data
+
+
+def test_position_zero_enregistree_pas_de_script_de_reprise_car_inutile(
+    client,
+) -> None:
+    # resolve_resume_seconds renvoie bien 0 pour une position à zéro
+    # (voir son propre test plus haut), mais "{% if seek_seconds %}"
+    # (Jinja) le traite comme absent - sans consequence : la vidéo
+    # démarre déjà à 0 par défaut, un script qui la repositionnerait à
+    # 0 ne changerait rien à l'écran. Documenté ici en non-régression
+    # plutôt que corrigé, pour ne pas le confondre plus tard avec un
+    # vrai bug.
+    media_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, media_id, 100.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "0"})
+
+    response = client.get(f"/watch/{media_id}")
+
+    assert response.status_code == 200
+    assert b"player.currentTime =" not in response.data
+
+
+# --- Remise à zéro par média : retirée -------------------------------------
+#
+# La route dédiée (POST /media/<id>/reset-progress, sans confirmation)
+# n'a plus aucun appelant : écartée du Programme et de la playlist (le
+# geste dans la timeline suffit), puis du bouton de /listen lui-même
+# (son libellé suggérait à tort qu'il relançait la lecture). Supprimée
+# plutôt que laissée morte - "Tout recommencer" sur la fiche couvre
+# maintenant les deux types, et une remise à zéro d'un seul fichier au
+# milieu d'un item se recrée facilement le jour où elle reviendrait.
+
+
+def test_reset_media_route_supprimee(client) -> None:
+    media_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+
+    response = client.post(f"/media/{media_id}/reset-progress")
+
+    assert response.status_code == 404
+
+
+def test_pas_de_controle_reset_par_media_dans_le_programme(client) -> None:
+    # Écarté par Gautier : glisser la barre de lecture est plus rapide
+    # et c'est ce que tout le monde fera - le contrôle par média
+    # n'apparaît nulle part sur la fiche, même quand une vidéo a une
+    # progression (donc un badge d'état visible).
+    media_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, media_id, 100.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "10"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    response = client.get(f"/item/{item_id}")
+    data = response.data.decode()
+
+    assert '<span class="file-state file-state-progress">En cours</span>' in data
+    assert f'action="/media/{media_id}/reset-progress"' not in data
+
+
+def test_pas_de_controle_reset_par_media_dans_la_playlist(client) -> None:
+    media_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, media_id, 100.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "10"})
+
+    response = client.get(f"/watch/{media_id}")
+    data = response.data.decode()
+
+    assert '<span class="file-state file-state-progress">En cours</span>' in data
+    assert "reset-progress" not in data
+
+
+def test_pas_de_bouton_recommencer_sur_listen(client) -> None:
+    # Retiré : son libellé ("Recommencer depuis le début") suggérait
+    # qu'il relançait la lecture alors qu'il effaçait la progression -
+    # "Tout recommencer" sur la fiche couvre maintenant l'audiobook.
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_duration(client, media_id, 10800.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "4320"})
+
+    response = client.get(f"/listen/{media_id}")
+    data = response.data.decode()
+
+    assert "Recommencer depuis le début" not in data
+    assert "reset-progress" not in data

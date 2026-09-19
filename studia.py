@@ -26,6 +26,21 @@ from covers import cover_cache_dir, cover_cache_path
 # servirait un livre audio sans Content-Type exploitable par <audio>.
 mimetypes.add_type("audio/mp4", ".m4b")
 
+# Quatre extensions vidéo pour lesquelles mimetypes.guess_type() ne
+# se contente pas d'ignorer l'extension : il renvoie un type trompeur,
+# hérité d'un tout autre format qui partage la même extension (fichier
+# de traduction Qt pour .ts, modèle 3D pour .mts, audio pour .3gp/.3g2
+# malgré un contenu vidéo) - pire qu'une absence, puisque le navigateur
+# croit savoir de quoi il s'agit. Les extensions vidéo/audio du
+# scanner sans type MIME connu mais dont le codec n'est de toute façon
+# lisible par aucun navigateur (.m2ts, .vob, .rmvb, .divx, .alac,
+# .ape, .mka) restent volontairement non corrigées : l'en-tête ne les
+# rendrait pas jouables pour autant.
+mimetypes.add_type("video/mp2t", ".ts")
+mimetypes.add_type("video/mp2t", ".mts")
+mimetypes.add_type("video/3gpp", ".3gp")
+mimetypes.add_type("video/3gpp2", ".3g2")
+
 BOOK_ITEM_TYPES = ("book", "audiobook")
 
 # Type de média suivi par la progression selon le type d'item - un
@@ -329,7 +344,7 @@ def resolve_resume_seconds(progress_row) -> int | None:
 def resolve_watch_target_media_id(
     media_ids: list[int], completed_ids: set[int]
 ) -> int | None:
-    """Cible du bouton hero ("Regarder"/"Écouter") : le premier média
+    """Cible du bouton hero principal : le premier média
     non terminé dans l'ordre du programme ; si tous le sont, le
     premier média de l'item (le rouvrir, c'est vouloir le revoir depuis
     le début - même règle que resolve_resume_seconds). None si l'item
@@ -514,18 +529,23 @@ def fetch_media_progress_states(
     }
 
 
+HERO_CTA_LABELS = {
+    "not_started": "Commencer",
+    "in_progress": "Continuer",
+    "completed": "Revoir",
+}
+
+
 def resolve_hero_cta(item_type: str, progress_status: str) -> tuple[str, str]:
-    """Verbe et endpoint du bouton principal du hero, selon le type
-    d'item et son statut de progression - vocabulaire déjà réservé
-    (Regarder, Lire, Écouter, Reprendre : voir CLAUDE.md, tranche
-    "restructuration visuelle des métadonnées")."""
+    """Verbe et endpoint du bouton principal du hero.
 
-    if item_type == "audiobook":
-        verb = "Reprendre" if progress_status == "in_progress" else "Écouter"
-        return verb, "listen_audio"
+    Le verbe est neutre, identique pour une formation et un audiobook
+    (Commencer/Continuer/Revoir) - "Regarder", "Écouter" et "Reprendre"
+    ne sont plus utilisés. Seul l'endpoint reste choisi par type."""
 
-    verb = "Reprendre" if progress_status == "in_progress" else "Regarder"
-    return verb, "watch_video"
+    endpoint = "listen_audio" if item_type == "audiobook" else "watch_video"
+
+    return HERO_CTA_LABELS[progress_status], endpoint
 
 
 def fetch_video_playlist(conn, item_id: int):
@@ -1233,6 +1253,22 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             progress_states = fetch_media_progress_states(
                 conn, item_id, tracked_media_type
             )
+
+            # Pour le texte de "Tout recommencer" côté audiobook (un seul
+            # fichier, aucun décompte de vidéos terminées n'a de sens -
+            # voir compute_item_progress_percent pour la même distinction
+            # côté pourcentage de la carte).
+            audiobook_position_seconds = None
+            if item["item_type"] == "audiobook":
+                audiobook_media = conn.execute(
+                    "SELECT id FROM media WHERE item_id = ? AND media_type = 'audio' "
+                    "ORDER BY sort_order LIMIT 1",
+                    (item_id,),
+                ).fetchone()
+                if audiobook_media is not None:
+                    audio_progress = fetch_media_progress(conn, audiobook_media["id"])
+                    if audio_progress is not None:
+                        audiobook_position_seconds = audio_progress["position_seconds"]
         finally:
             conn.close()
 
@@ -1263,6 +1299,18 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         )
         watch_label, watch_endpoint = resolve_hero_cta(
             item["item_type"], progress_status
+        )
+        # Pour le texte de la boîte de dialogue "Tout recommencer" (une
+        # formation seulement - un audiobook n'a qu'un fichier, rien à
+        # compter).
+        completed_media_count = len(completed_ids)
+        tracked_media_count = len(playable_ids)
+        # Le décompte "N terminées sur M" ignore la position d'une vidéo
+        # commencée mais pas terminée - sans cette ligne, la boîte de
+        # dialogue annoncerait "0 perte" alors qu'une position réelle va
+        # disparaître (voir la discussion avec Gautier).
+        has_in_progress_media = any(
+            state == "in_progress" for state in progress_states.values()
         )
 
         total_duration = sum(m["duration_seconds"] or 0 for m in media_rows)
@@ -1335,6 +1383,10 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             first_playable_media_id=first_playable_media_id,
             watch_label=watch_label,
             watch_endpoint=watch_endpoint,
+            completed_media_count=completed_media_count,
+            tracked_media_count=tracked_media_count,
+            has_in_progress_media=has_in_progress_media,
+            audiobook_position_seconds=audiobook_position_seconds,
             progress_status=progress_status,
             progress_states=progress_states,
             total_duration=total_duration,
@@ -1369,11 +1421,17 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
 
     @app.route("/item/<int:item_id>/reset-progress", methods=["POST"])
     def reset_item_progress(item_id: int):
+        # Efface tout, puis enchaîne directement sur la lecture depuis le
+        # début (décidé avec Gautier) : une action de lecture ("tout
+        # recommencer"), pas une simple purge qui laisserait sur la
+        # fiche. Sans média suivi (item sans lecteur), repli sur la
+        # fiche - ne devrait pas arriver en pratique, le bouton n'est
+        # visible que si progress_status != 'not_started'.
         conn = connect_database(app.config["DB_PATH"])
 
         try:
             item = conn.execute(
-                "SELECT id FROM items WHERE id = ?", (item_id,)
+                "SELECT id, item_type FROM items WHERE id = ?", (item_id,)
             ).fetchone()
 
             if item is None:
@@ -1385,10 +1443,27 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                 (item_id,),
             )
             conn.commit()
+
+            tracked_media_type = TRACKED_PROGRESS_MEDIA_TYPE.get(item["item_type"])
+            first_media = None
+            if tracked_media_type:
+                first_media = conn.execute(
+                    """
+                    SELECT id FROM media
+                    WHERE item_id = ? AND media_type = ?
+                    ORDER BY sort_order LIMIT 1
+                    """,
+                    (item_id, tracked_media_type),
+                ).fetchone()
         finally:
             conn.close()
 
-        return redirect(url_for("item_detail", item_id=item_id))
+        if first_media is None:
+            return redirect(url_for("item_detail", item_id=item_id))
+
+        watch_endpoint = "listen_audio" if tracked_media_type == "audio" else "watch_video"
+
+        return redirect(url_for(watch_endpoint, media_id=first_media["id"]))
 
     @app.route("/notes-orphelines")
     def orphan_notes():

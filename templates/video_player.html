@@ -167,7 +167,12 @@
 
         function sendPosition(useBeacon) {
             var position = player.currentTime;
-            if (!position) {
+            // 0 est une position valide (glisser la barre au tout début,
+            // ou mettre en pause dans la première seconde) : "!position"
+            // la confondrait avec une position absente, puisque 0 est une
+            // valeur fausse en JavaScript. Seule une valeur non numérique
+            // doit être ignorée.
+            if (typeof position !== 'number' || Number.isNaN(position)) {
                 return;
             }
 

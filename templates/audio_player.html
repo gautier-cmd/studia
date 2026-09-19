@@ -34,7 +34,9 @@
 
         function sendPosition(useBeacon) {
             var position = player.currentTime;
-            if (!position) {
+            // Même règle que video_player.html : 0 est une position
+            // valide, à distinguer d'une valeur non numérique.
+            if (typeof position !== 'number' || Number.isNaN(position)) {
                 return;
             }
 
