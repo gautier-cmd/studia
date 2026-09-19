@@ -96,16 +96,24 @@ mais n'écrit pas de code et ne corrige pas une commande lui-même.
 Item (un dossier de premier niveau) contient des Media et des Resources.
 Le concept Lesson d'OfflineU est abandonné.
 
-Tables SQLite, schéma version 4 :
+Tables SQLite, schéma version 5 :
 schema_info, users, items, media, resources, progress, book_search,
-book_candidates, notes.
+book_candidates, notes, media_chapters.
 
     media       item_id, relative_path, parent_path, sort_order,
                 media_type, extension, size_bytes,
-                duration_seconds, probed_at, created_at
+                duration_seconds, probed_at, chapters_probed_at,
+                created_at
                 UNIQUE(item_id, relative_path)
     resources   mêmes colonnes sans durée
     progress    UNIQUE(user_id, media_id) — jamais media_id seul
+
+    media_chapters   media_id, chapter_index (brut ffprobe, jamais
+                     renuméroté), title (NULL si absent du fichier),
+                     start_seconds, end_seconds
+                     UNIQUE(media_id, chapter_index)
+                     FOREIGN KEY(media_id) ON DELETE CASCADE
+                     — voir "Chapitres internes des M4B" plus bas
 
     book_search      item_id (clé), query, searched_at — dernière
                      recherche lancée pour un item livre
@@ -915,13 +923,6 @@ même mécanique de position (en secondes) que la vidéo, déjà posée,
 alors que le PDF progresse par page et suppose d'abord de connaître
 le nombre de pages — pas encore lu au scan (voir backlog).
 
-Les chapitres internes du M4B (repères ffprobe -show_chapters à
-l'intérieur du fichier, distincts des chapitres par sous-dossier) ne
-font pas partie de cette tranche : décidé avec Gautier, pour ne pas
-mêler un chantier de lecteur à un chantier de scanner qui demanderait
-une nouvelle table. Ligne de backlog inchangée, tranche suivante une
-fois celle-ci validée.
-
 Progression selon le type : secondes pour vidéo et audio, page pour PDF,
 position pour EPUB.
 
@@ -1018,11 +1019,6 @@ autoplay>`, contrôles natifs du navigateur uniquement — pas de barre
 de transport maison, pas de bouton ±15 s, pas de réglage de vitesse
 ajouté à la main (déjà exposé nativement par Chrome sur `<audio
 controls>`) : même sobriété que le lecteur vidéo.
-
-Les chapitres internes du M4B restent hors de cette tranche (voir
-"Objectif suivant" ci-dessus et le backlog) : décidé avec Gautier pour
-ne pas mêler un chantier de lecteur à un chantier de scanner qui
-demanderait une nouvelle table.
 
 **Progression, réutilisée à l'identique.** Les règles qui ne
 filtraient déjà pas par type de média (`fetch_media_progress`,
@@ -1276,6 +1272,91 @@ navigateur), seuls les morceaux nécessaires sont replacés.
 
 `pytest tests/` (187 tests) au vert.
 
+### Chapitres internes des M4B (fait)
+
+Rend un audiobook navigable par chapitre au lieu d'un seul bloc continu
+(voir `media_chapters`, "Modèle de données" ci-dessus). Décision de
+données actée avec Gautier : les chapitres sont lus par ffprobe
+`-show_chapters` au moment du scan, au même titre que la durée — la
+valeur mesurée fait toujours foi, jamais une entrée fabriquée. Un
+fichier sans chapitre ne produit aucune ligne dans `media_chapters`,
+jamais une entrée unique couvrant tout le fichier.
+
+- **Sondage (`library_index.py`).** `chapters_probed_at` (colonne sur
+  `media`, comme `probed_at` pour la durée) dit si les chapitres d'un
+  fichier ont déjà été examinés — `NULL` = jamais examiné, une date =
+  examiné, qu'il y ait 0 ou N chapitres ensuite. Sans cette colonne,
+  "aucune ligne dans `media_chapters`" aurait été ambigu : impossible
+  de distinguer "jamais regardé" de "regardé, rien trouvé", et chaque
+  `--probe` aurait resondé indéfiniment tout fichier sans chapitre.
+  `probe_missing_media_info()` (ex-`probe_missing_durations`,
+  renommée puisqu'elle fait maintenant les deux) sélectionne tout
+  média où `duration_seconds IS NULL OR chapters_probed_at IS NULL`,
+  **sans filtre de type** : une vidéo peut porter des chapitres au
+  même titre qu'un audio, et la colonne doit dire ce qui a été
+  examiné, pas ce qui est affiché aujourd'hui — seul `/listen` montre
+  une colonne de chapitres pour l'instant (voir plus bas), le lecteur
+  vidéo n'affiche rien de nouveau même si des lignes existent pour lui.
+  Chaque fichier sélectionné ne refait que ce qui lui manque
+  réellement (durée seule, chapitres seuls, ou les deux) : une
+  bibliothèque déjà entièrement sondée pour la durée n'a besoin que
+  d'un seul `--probe` pour recevoir ses chapitres, pas d'un
+  `--reprobe` complet. `--reprobe` remet les trois colonnes à NULL
+  (`duration_seconds`, `probed_at`, `chapters_probed_at`).
+- **Invalidation.** Re-sondage d'un média = ses lignes `media_chapters`
+  effacées puis réinsérées, jamais fusionnées — pas de colonne de
+  fraîcheur séparée pour ça, le même signal (`chapters_probed_at`)
+  sert à décider *quand* resonder. Quand la taille du fichier change
+  (upsert du scan), `chapters_probed_at` repasse à NULL comme
+  `duration_seconds`/`probed_at`, et les lignes déjà stockées sont
+  effacées tout de suite plutôt que de rester affichées, fausses,
+  jusqu'au prochain `--probe` — même logique que la durée, qui
+  redevient NULL immédiatement plutôt que de garder une valeur
+  périmée à l'écran.
+- **Numéro affiché ≠ index stocké.** `chapter_index` garde la valeur
+  brute ffprobe (`id`) en base, pour traçabilité, mais n'est jamais
+  montré tel quel : le numéro affiché (1, 2, 3…) est la position dans
+  la liste triée par `start_seconds` (`fetch_media_chapters`,
+  studia.py), puisque l'id ffprobe n'a aucune raison d'être stable ou
+  de commencer à 1.
+- **Titre jamais reformaté.** Stocké exactement comme `tags.title` le
+  donne ; `NULL` si le fichier n'en fournit pas. Aucun repli fabriqué
+  (pas de "Chapitre N") : un chapitre sans titre affiche son numéro et
+  sa durée, rien à la place du titre — un repli inventerait une
+  information qui n'existe pas dans le fichier.
+- **Affichage (`/listen`, `audio_player.html`), seulement si la liste
+  n'est pas vide.** Reprend le composant `.playlist`/`.file-row` de la
+  playlist vidéo tel quel (numéro à gauche, titre en gras, durée en
+  dessous, ancrage collant borné à la fenêtre visible, centrage du
+  chapitre courant au chargement) plutôt que d'écrire un second
+  mécanisme de défilement — seule différence structurelle : chaque
+  ligne est un `<button>` (un clic déplace la lecture, il ne change
+  jamais de page) et non un `<a>`, et le titre est limité à deux
+  lignes avec troncature (`-webkit-line-clamp`, `.chapter-row
+  .file-title`), une vraie limite ici plutôt qu'une longueur habituelle
+  comme sur la playlist vidéo. Pas de coche : un chapitre n'a pas
+  d'état "terminé" propre, la progression reste une position unique
+  sur le fichier entier (inchangée, voir ci-dessous). Le surlignage du
+  chapitre courant se met à jour sur `timeupdate` (comparaison directe
+  des `start`/`end` en JavaScript, aucune écriture serveur), et suit la
+  même initialisation "invisible jusqu'à positionné" que la playlist
+  vidéo pour ne montrer aucun mouvement au chargement.
+- **Hors périmètre, explicitement.** Ni le seuil du "terminé", ni la
+  règle de reprise, ni le calcul du pourcentage de la carte n'ont
+  changé — la progression d'un audiobook reste une position unique sur
+  le fichier entier, un chapitre n'ajoute aucun état propre. Le lecteur
+  vidéo n'affiche aucune colonne de chapitres, même pour un fichier qui
+  en a désormais en base : tranche à part, pas encore faite.
+
+Vérifié avec le vrai audiobook de la bibliothèque de test (16
+chapitres réels, `--probe`) : liste affichée, surlignage qui suit la
+lecture, clic qui déplace la position. Testé en pytest : sélection du
+sondage (durée seule/chapitres seuls/les deux, sans filtre de type),
+invalidation à la taille, non-invention de titre, absence de colonne
+sans chapitre, absence de toute colonne sur `/watch`.
+
+`pytest tests/` (199 tests) au vert.
+
 ## Méthode — backlog
 
 Avant de commencer une tranche, relire le backlog et signaler les
@@ -1346,8 +1427,6 @@ backlog plus difficile à corriger sans le signaler d'abord.
   "Bloc-notes" — reste vrai pour la progression de lecture par média.)
 - Le compteur « sans durée » du résumé compte aussi les PDF, qui n'en ont
   pas. Affichage à corriger.
-- Chapitres internes des M4B (ffprobe -show_chapters), distincts des
-  chapitres par sous-dossier.
 - Nombre de pages des PDF.
 - Couvertures : deux étapes de l'ordre de priorité acté (voir
   « Priorité des couvertures » ci-dessus) restent non implémentées —

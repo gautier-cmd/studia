@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import sqlite3
@@ -20,7 +21,7 @@ from offlineu_core import (
     SUBTITLE_EXTENSIONS,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 PROBE_TIMEOUT_SECONDS = 60
 PROBE_COMMIT_EVERY = 50
@@ -173,6 +174,17 @@ def create_schema(conn: sqlite3.Connection) -> None:
             text TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS media_chapters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            media_id INTEGER NOT NULL,
+            chapter_index INTEGER NOT NULL,
+            title TEXT,
+            start_seconds REAL NOT NULL,
+            end_seconds REAL NOT NULL,
+            UNIQUE(media_id, chapter_index),
+            FOREIGN KEY(media_id) REFERENCES media(id) ON DELETE CASCADE
+        );
         """
     )
 
@@ -216,6 +228,7 @@ def migrate_schema(conn: sqlite3.Connection) -> list[str]:
             ("sort_order", "INTEGER NOT NULL DEFAULT 0"),
             ("duration_seconds", "REAL"),
             ("probed_at", "TEXT"),
+            ("chapters_probed_at", "TEXT"),
         ],
         "resources": [
             ("parent_path", "TEXT NOT NULL DEFAULT ''"),
@@ -360,10 +373,19 @@ def upsert_media(
     L'id stable est ce qui permet a progress.media_id de survivre
     a un rescan.
 
-    La duree est conservee tant que la taille du fichier ne bouge
-    pas. Si elle change, le fichier n'est plus le meme : la duree
-    memorisee devient fausse et repasse a NULL pour etre resondee.
+    La duree et l'examen des chapitres sont conserves tant que la
+    taille du fichier ne bouge pas. Si elle change, le fichier n'est
+    plus le meme : ces deux informations redeviennent NULL pour etre
+    resondees - et les lignes de media_chapters deja stockees, qui
+    decriraient alors un fichier qui n'existe plus, sont effacees
+    tout de suite plutot que de rester affichees, fausses, jusqu'au
+    prochain --probe.
     """
+
+    existant = conn.execute(
+        "SELECT id, size_bytes FROM media WHERE item_id = ? AND relative_path = ?",
+        (item_id, relative_path),
+    ).fetchone()
 
     conn.execute(
         """
@@ -394,6 +416,11 @@ def upsert_media(
                 THEN media.probed_at
                 ELSE NULL
             END,
+            chapters_probed_at = CASE
+                WHEN media.size_bytes = excluded.size_bytes
+                THEN media.chapters_probed_at
+                ELSE NULL
+            END,
             size_bytes = excluded.size_bytes
         """,
         (
@@ -407,6 +434,12 @@ def upsert_media(
             timestamp,
         ),
     )
+
+    if existant is not None and existant["size_bytes"] != size_bytes:
+        conn.execute(
+            "DELETE FROM media_chapters WHERE media_id = ?",
+            (existant["id"],),
+        )
 
 
 def upsert_resource(
@@ -632,14 +665,85 @@ def probe_duration(file_path: Path) -> float | None:
     return duree if duree > 0 else None
 
 
-def probe_missing_durations(
+def probe_chapters(file_path: Path) -> list[dict]:
+    """Chapitres internes d'un fichier, lus par ffprobe -show_chapters.
+
+    Renvoie une liste vide si l'outil est absent, si le fichier n'est
+    pas lisible, ou s'il ne declare reellement aucun chapitre - les
+    trois cas sont indiscernables ici et traites pareil : rien a
+    stocker. C'est chapters_probed_at (mis a jour par l'appelant) qui
+    distingue "jamais examine" de "examine, rien trouve", pas cette
+    fonction.
+
+    Chaque chapitre garde son index brut ffprobe (`id`), jamais
+    renumerote, et son titre tel quel (`tags.title`), absent (None)
+    plutot qu'invente si le fichier n'en fournit pas.
+    """
+
+    try:
+        resultat = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_chapters",
+                "-of",
+                "json",
+                str(file_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT_SECONDS,
+        )
+
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+
+    try:
+        data = json.loads(resultat.stdout)
+    except ValueError:
+        return []
+
+    chapitres = []
+
+    for brut in data.get("chapters", []):
+        try:
+            index = int(brut["id"])
+            debut = float(brut["start_time"])
+            fin = float(brut["end_time"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        titre = (brut.get("tags") or {}).get("title") or None
+
+        chapitres.append(
+            {
+                "index": index,
+                "title": titre,
+                "start_seconds": debut,
+                "end_seconds": fin,
+            }
+        )
+
+    return chapitres
+
+
+def probe_missing_media_info(
     conn: sqlite3.Connection,
     library_root: Path,
     verbose: bool = True,
-) -> tuple[int, int]:
-    """Sonde les medias dont la duree est inconnue.
+) -> tuple[int, int, int]:
+    """Sonde la duree et/ou les chapitres des medias pas encore examines.
 
-    Renvoie (nombre sonde avec succes, nombre total examine).
+    Un media est repris s'il lui manque l'une des deux informations
+    (chacune independamment de l'autre) - aucun filtre de type : une
+    video peut porter des chapitres au meme titre qu'un audio,
+    chapters_probed_at doit dire ce qui a ete examine, pas ce qui est
+    affiche aujourd'hui (seul /listen montre une colonne de chapitres
+    pour l'instant).
+
+    Renvoie (durees lues avec succes, fichiers ou au moins un chapitre
+    a ete trouve, nombre total de medias examines).
     """
 
     if shutil.which("ffprobe") is None:
@@ -653,34 +757,72 @@ def probe_missing_durations(
         SELECT
             m.id,
             i.library_path,
-            m.relative_path
+            m.relative_path,
+            m.duration_seconds,
+            m.chapters_probed_at
         FROM media m
         JOIN items i ON i.id = m.item_id
         WHERE m.duration_seconds IS NULL
-          AND m.media_type IN ('video', 'audio')
+           OR m.chapters_probed_at IS NULL
         ORDER BY i.library_path, m.sort_order
         """
     ).fetchall()
 
     total = len(rows)
-    reussites = 0
+    durees_reussies = 0
+    avec_chapitres = 0
 
     for index, row in enumerate(rows, start=1):
         file_path = library_root / row["library_path"] / row["relative_path"]
 
-        duree = probe_duration(file_path)
+        if row["duration_seconds"] is None:
+            duree = probe_duration(file_path)
 
-        if duree is not None:
-            reussites += 1
+            if duree is not None:
+                durees_reussies += 1
 
-        conn.execute(
-            """
-            UPDATE media
-            SET duration_seconds = ?, probed_at = ?
-            WHERE id = ?
-            """,
-            (duree, now_iso(), row["id"]),
-        )
+            conn.execute(
+                """
+                UPDATE media
+                SET duration_seconds = ?, probed_at = ?
+                WHERE id = ?
+                """,
+                (duree, now_iso(), row["id"]),
+            )
+
+        if row["chapters_probed_at"] is None:
+            chapitres = probe_chapters(file_path)
+
+            conn.execute(
+                "DELETE FROM media_chapters WHERE media_id = ?",
+                (row["id"],),
+            )
+
+            for chapitre in chapitres:
+                conn.execute(
+                    """
+                    INSERT INTO media_chapters(
+                        media_id, chapter_index, title,
+                        start_seconds, end_seconds
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["id"],
+                        chapitre["index"],
+                        chapitre["title"],
+                        chapitre["start_seconds"],
+                        chapitre["end_seconds"],
+                    ),
+                )
+
+            if chapitres:
+                avec_chapitres += 1
+
+            conn.execute(
+                "UPDATE media SET chapters_probed_at = ? WHERE id = ?",
+                (now_iso(), row["id"]),
+            )
 
         if index % PROBE_COMMIT_EVERY == 0:
             conn.commit()
@@ -690,7 +832,7 @@ def probe_missing_durations(
 
     conn.commit()
 
-    return reussites, total
+    return durees_reussies, avec_chapitres, total
 
 
 def scan_library(
@@ -755,14 +897,17 @@ def scan_library(
 
         if probe:
             if verbose:
-                print("Analyse des durées par ffprobe…")
+                print("Analyse des durées et des chapitres par ffprobe…")
 
-            reussites, total = probe_missing_durations(
+            durees_reussies, avec_chapitres, total = probe_missing_media_info(
                 conn, library_root, verbose
             )
 
             if verbose:
-                print(f"Durées lues : {reussites}/{total}")
+                print(
+                    f"Durées lues : {durees_reussies}/{total} — "
+                    f"fichiers avec chapitres : {avec_chapitres}"
+                )
 
     finally:
         conn.close()
@@ -858,13 +1003,13 @@ def main() -> None:
     parser.add_argument(
         "--probe",
         action="store_true",
-        help="lire la durée des vidéos et audios avec ffprobe",
+        help="lire la durée et les chapitres des médias avec ffprobe",
     )
 
     parser.add_argument(
         "--reprobe",
         action="store_true",
-        help="oublier les durées connues et tout resonder",
+        help="oublier les durées et chapitres connus et tout resonder",
     )
 
     parser.add_argument(
@@ -886,7 +1031,11 @@ def main() -> None:
 
         try:
             conn.execute(
-                "UPDATE media SET duration_seconds = NULL, probed_at = NULL"
+                """
+                UPDATE media
+                SET duration_seconds = NULL, probed_at = NULL,
+                    chapters_probed_at = NULL
+                """
             )
             conn.commit()
 

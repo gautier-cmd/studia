@@ -23,7 +23,9 @@ from library_index import (  # noqa: E402
     format_duration,
     natural_key,
     parent_of,
+    probe_chapters,
     probe_duration,
+    probe_missing_media_info,
     scan_library,
 )
 
@@ -146,6 +148,17 @@ def test_probe_duration_sur_faux_fichier(tmp_path: Path) -> None:
     # Sans ffprobe installe comme avec, un fichier invalide
     # ne doit jamais faire echouer le scanner.
     assert probe_duration(faux) is None
+
+
+def test_probe_chapters_sur_faux_fichier(tmp_path: Path) -> None:
+    faux = tmp_path / "faux.m4b"
+    faux.write_bytes(b"pas un livre audio")
+
+    # Meme principe que probe_duration : liste vide, jamais d'erreur -
+    # et c'est exactement ce que renvoie aussi un fichier lisible mais
+    # reellement sans chapitre (voir chapters_probed_at pour distinguer
+    # les deux cas cote scanner, pas cette fonction).
+    assert probe_chapters(faux) == []
 
 
 # --------------------------------------------------------------------
@@ -490,6 +503,186 @@ def test_duree_invalidee_si_la_taille_change(
 
 
 # --------------------------------------------------------------------
+# Chapitres internes (M4B et video)
+# --------------------------------------------------------------------
+
+
+def insert_chapter(
+    db_path: Path,
+    media_id: int,
+    chapter_index: int,
+    title: str | None,
+    start: float,
+    end: float,
+) -> None:
+    execute(
+        db_path,
+        "INSERT INTO media_chapters(media_id, chapter_index, title, "
+        "start_seconds, end_seconds) VALUES (?, ?, ?, ?, ?)",
+        (media_id, chapter_index, title, start, end),
+    )
+
+
+def test_chapitres_conserves_si_le_fichier_ne_change_pas(
+    library: Path, db: Path
+) -> None:
+    scan_library(library, db, verbose=False)
+
+    media_id = query(db, "SELECT id FROM media ORDER BY id")[0][0]
+
+    execute(
+        db,
+        "UPDATE media SET chapters_probed_at = 'test' WHERE id = ?",
+        (media_id,),
+    )
+    insert_chapter(db, media_id, 0, "Chapitre un", 0.0, 60.0)
+
+    scan_library(library, db, verbose=False)
+
+    assert query(
+        db, "SELECT chapters_probed_at FROM media WHERE id = ?", (media_id,)
+    ) == [("test",)]
+    assert query(
+        db, "SELECT title FROM media_chapters WHERE media_id = ?", (media_id,)
+    ) == [("Chapitre un",)]
+
+
+def test_chapitres_invalides_si_la_taille_change(
+    library: Path, db: Path
+) -> None:
+    scan_library(library, db, verbose=False)
+
+    item = "Devenez Copywriter avec les IA (TUTO.com)"
+
+    media_id, relative_path = query(
+        db,
+        """
+        SELECT m.id, m.relative_path FROM media m
+        JOIN items i ON i.id = m.item_id
+        WHERE i.title = ?
+        ORDER BY m.sort_order
+        """,
+        (item,),
+    )[0]
+
+    execute(
+        db,
+        "UPDATE media SET chapters_probed_at = 'test' WHERE id = ?",
+        (media_id,),
+    )
+    insert_chapter(db, media_id, 0, "Chapitre un", 0.0, 60.0)
+
+    # Le fichier est remplace par un autre, de taille differente : les
+    # chapitres memorises decriraient un fichier qui n'existe plus.
+    (library / item / relative_path).write_bytes(b"contenu plus long")
+
+    scan_library(library, db, verbose=False)
+
+    assert query(
+        db, "SELECT chapters_probed_at FROM media WHERE id = ?", (media_id,)
+    ) == [(None,)]
+    assert query(
+        db, "SELECT * FROM media_chapters WHERE media_id = ?", (media_id,)
+    ) == []
+
+
+def test_probe_chapites_sans_filtre_de_type(
+    library: Path, db: Path, monkeypatch
+) -> None:
+    """La colonne chapters_probed_at dit ce qui a ete examine, pas ce
+    qui est affiche aujourd'hui : une video est sondee au meme titre
+    qu'un audio, meme si seul /listen montre des chapitres pour
+    l'instant."""
+
+    scan_library(library, db, verbose=False)
+
+    video_id, video_path = query(
+        db,
+        "SELECT id, relative_path FROM media WHERE media_type = 'video' "
+        "ORDER BY id LIMIT 1",
+    )[0]
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/ffprobe")
+    monkeypatch.setattr(
+        "library_index.probe_duration", lambda path: 42.0
+    )
+    monkeypatch.setattr(
+        "library_index.probe_chapters",
+        lambda path: [
+            {"index": 0, "title": "Intro", "start_seconds": 0.0, "end_seconds": 10.0}
+        ],
+    )
+
+    from library_index import connect_database
+
+    conn = connect_database(db)
+    try:
+        probe_missing_media_info(conn, library, verbose=False)
+    finally:
+        conn.close()
+
+    assert query(
+        db, "SELECT chapters_probed_at IS NOT NULL FROM media WHERE id = ?",
+        (video_id,),
+    ) == [(1,)]
+    assert query(
+        db, "SELECT title FROM media_chapters WHERE media_id = ?", (video_id,)
+    ) == [("Intro",)]
+
+
+def test_probe_ne_refait_que_ce_qui_manque(
+    library: Path, db: Path, monkeypatch
+) -> None:
+    """Une duree deja connue n'est pas resondee juste parce que les
+    chapitres, eux, manquent encore."""
+
+    scan_library(library, db, verbose=False)
+
+    media_id = query(db, "SELECT id FROM media ORDER BY id")[0][0]
+
+    # Tout le reste de la bibliotheque est deja completement sonde (les
+    # deux informations) : seul media_id doit encore etre traite, et
+    # seulement pour ses chapitres.
+    execute(db, "UPDATE media SET duration_seconds = 999.0, probed_at = 'deja', "
+                "chapters_probed_at = 'deja'")
+    execute(
+        db,
+        "UPDATE media SET duration_seconds = 123.0, probed_at = 'deja', "
+        "chapters_probed_at = NULL WHERE id = ?",
+        (media_id,),
+    )
+
+    def fail_if_called(path):
+        raise AssertionError("ne devait pas etre appele")
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/ffprobe")
+    monkeypatch.setattr("library_index.probe_duration", fail_if_called)
+    monkeypatch.setattr("library_index.probe_chapters", lambda path: [])
+
+    from library_index import connect_database
+
+    conn = connect_database(db)
+    try:
+        probe_missing_media_info(conn, library, verbose=False)
+    finally:
+        conn.close()
+
+    # La duree connue n'a pas ete touchee (probe_duration n'a pas ete
+    # appele, sinon fail_if_called aurait leve), et les chapitres sont
+    # desormais marques examines - vide, mais examine.
+    assert query(
+        db, "SELECT duration_seconds FROM media WHERE id = ?", (media_id,)
+    ) == [(123.0,)]
+    assert query(
+        db, "SELECT chapters_probed_at IS NOT NULL FROM media WHERE id = ?",
+        (media_id,),
+    ) == [(1,)]
+    assert query(
+        db, "SELECT * FROM media_chapters WHERE media_id = ?", (media_id,)
+    ) == []
+
+
+# --------------------------------------------------------------------
 # Migration de schema
 # --------------------------------------------------------------------
 
@@ -591,8 +784,22 @@ def test_migration_depuis_schema_v1(library: Path, db: Path) -> None:
         for row in query(db, "PRAGMA table_info(media)")
     }
 
-    assert {"parent_path", "sort_order", "duration_seconds", "probed_at"} <= colonnes
+    assert {
+        "parent_path",
+        "sort_order",
+        "duration_seconds",
+        "probed_at",
+        "chapters_probed_at",
+    } <= colonnes
     assert query(db, "SELECT version FROM schema_info") == [(SCHEMA_VERSION,)]
+
+    tables = {
+        row[0]
+        for row in query(
+            db, "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    assert "media_chapters" in tables
 
     # Le media prealable garde son id 1, donc sa progression.
     assert query(

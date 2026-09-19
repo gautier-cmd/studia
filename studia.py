@@ -326,6 +326,60 @@ def fetch_media_progress(conn, media_id: int):
     ).fetchone()
 
 
+def fetch_media_chapters(conn, media_id: int) -> list[dict]:
+    """Chapitres internes d'un fichier (M4B), triés par position.
+
+    Liste vide si le fichier n'en a aucun - jamais une entrée unique
+    couvrant tout le fichier. Le numéro affiché (`number`, 1, 2, 3…)
+    est la position dans cette liste triée, jamais `chapter_index`
+    (l'id brut ffprobe, conservé en base mais sans raison d'être
+    stable ou de commencer à 1) : il ne sert qu'à l'unicité en base.
+    """
+
+    rows = conn.execute(
+        """
+        SELECT title, start_seconds, end_seconds
+        FROM media_chapters
+        WHERE media_id = ?
+        ORDER BY start_seconds
+        """,
+        (media_id,),
+    ).fetchall()
+
+    return [
+        {
+            "number": position,
+            "title": row["title"],
+            "start_seconds": row["start_seconds"],
+            "end_seconds": row["end_seconds"],
+        }
+        for position, row in enumerate(rows, start=1)
+    ]
+
+
+def resolve_current_chapter_number(
+    chapters: list[dict], position_seconds: float
+) -> int | None:
+    """Numéro (voir fetch_media_chapters) du chapitre contenant
+    `position_seconds`, ou None si la liste est vide.
+
+    Le dernier chapitre dont le début ne dépasse pas la position
+    l'emporte : couvre aussi bien une position tombant pile dans un
+    chapitre qu'une position en fin de fichier, au-delà de la fin du
+    dernier chapitre (arrondi), sans traitement à part.
+    """
+
+    current = None
+
+    for chapter in chapters:
+        if chapter["start_seconds"] <= position_seconds:
+            current = chapter["number"]
+        else:
+            break
+
+    return current
+
+
 def resolve_resume_seconds(progress_row) -> int | None:
     """Position à proposer pour la reprise automatique (sans repère
     explicite) : la position enregistrée tant que la vidéo n'est pas
@@ -1784,6 +1838,7 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                 abort(404)
 
             stored_progress = fetch_media_progress(conn, media_id)
+            chapters = fetch_media_chapters(conn, media_id)
         finally:
             conn.close()
 
@@ -1802,10 +1857,16 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         if seek_seconds is None:
             seek_seconds = resolve_resume_seconds(stored_progress)
 
+        current_chapter_number = resolve_current_chapter_number(
+            chapters, seek_seconds or 0
+        )
+
         return render_template(
             "audio_player.html",
             media=media,
             seek_seconds=seek_seconds,
+            chapters=chapters,
+            current_chapter_number=current_chapter_number,
             note_text=note["text"] if note else "",
             note_updated_at=note["updated_at"] if note else None,
             player_context={

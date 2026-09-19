@@ -16,6 +16,24 @@
 
         {{ render_note(media['item_id'], note_text, note_updated_at, player_context=player_context) }}
     </div>
+
+    {% if chapters %}
+    <div class="playlist" id="playlist" style="visibility: hidden;">
+        {% for chapter in chapters %}
+        <button type="button"
+                class="file-row chapter-row {{ 'current' if chapter.number == current_chapter_number else '' }}"
+                data-chapter-number="{{ chapter.number }}"
+                data-start="{{ chapter.start_seconds }}">
+            <span class="file-number">{{ chapter.number }}</span>
+            <span class="file-main">
+                {% if chapter.title %}<span class="file-title">{{ chapter.title }}</span>{% endif %}
+                <span class="file-meta">{{ format_duration(chapter.end_seconds - chapter.start_seconds) }}</span>
+            </span>
+        </button>
+        {% endfor %}
+    </div>
+    <noscript><style>#playlist { visibility: visible !important; }</style></noscript>
+    {% endif %}
 </div>
 {% endblock %}
 
@@ -83,6 +101,65 @@
         });
     })();
 </script>
+
+{% if chapters %}
+<script>
+    (function () {
+        var player = document.getElementById('player');
+        var playlist = document.getElementById('playlist');
+        if (!player || !playlist) {
+            return;
+        }
+
+        var rows = Array.prototype.slice.call(playlist.querySelectorAll('.file-row'));
+
+        // Positionnement initial, repris tel quel de video_player.html
+        // (voir cette tranche) : #playlist démarre masqué (visibility:
+        // hidden posé en dur dans le gabarit), la position finale est
+        // calculée et appliquée directement (jamais un scrollTo animé)
+        // avant d'être révélée - aucun mouvement visible au chargement.
+        function computeCenterTarget(row) {
+            var target = row.offsetTop - playlist.clientHeight / 2 + row.offsetHeight / 2;
+            var max = playlist.scrollHeight - playlist.clientHeight;
+            return Math.max(0, Math.min(target, max));
+        }
+
+        var initialCurrent = playlist.querySelector('.file-row.current');
+        if (initialCurrent && window.innerWidth > 719) {
+            playlist.scrollTop = computeCenterTarget(initialCurrent);
+        }
+        playlist.style.visibility = 'visible';
+
+        // Un clic déplace la lecture à son début - jamais de changement
+        // de page, contrairement à la playlist vidéo : un seul fichier.
+        rows.forEach(function (row) {
+            row.addEventListener('click', function () {
+                player.currentTime = parseFloat(row.dataset.start);
+            });
+        });
+
+        // Le surlignage suit la lecture en direct, sur "timeupdate" -
+        // aucune écriture serveur ici, seulement un changement de
+        // classe. Un chapitre n'a pas d'état "terminé" propre (la
+        // progression reste une position unique sur le fichier entier,
+        // voir CLAUDE.md) : jamais de coche, seul le surlignage bouge.
+        player.addEventListener('timeupdate', function () {
+            var position = player.currentTime;
+            var current = null;
+
+            rows.forEach(function (row) {
+                if (parseFloat(row.dataset.start) <= position) {
+                    current = row;
+                }
+            });
+
+            rows.forEach(function (row) {
+                row.classList.toggle('current', row === current);
+            });
+        });
+    })();
+</script>
+{% endif %}
 
 {% if seek_seconds %}
 <script>

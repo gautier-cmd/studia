@@ -275,6 +275,24 @@ def set_duration(client, media_id: int, duration_seconds: float) -> None:
         conn.close()
 
 
+def set_chapters(client, media_id: int, chapters: list[tuple]) -> None:
+    """chapters : liste de (chapter_index, title, start, end)."""
+
+    db_path = client.application.config["DB_PATH"]
+    conn = sqlite3.connect(db_path)
+
+    try:
+        conn.execute("DELETE FROM media_chapters WHERE media_id = ?", (media_id,))
+        conn.executemany(
+            "INSERT INTO media_chapters(media_id, chapter_index, title, "
+            "start_seconds, end_seconds) VALUES (?, ?, ?, ?, ?)",
+            [(media_id, *chapitre) for chapitre in chapters],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def fetch_progress_row(client, media_id: int):
     db_path = client.application.config["DB_PATH"]
     conn = sqlite3.connect(db_path)
@@ -1347,6 +1365,126 @@ def test_marker_pattern_reconnait_watch_et_listen(client) -> None:
     data = response.data.decode()
 
     assert "\\/(?:watch|listen)\\/" in data
+
+
+# --------------------------------------------------------------------
+# Chapitres internes (M4B)
+# --------------------------------------------------------------------
+
+
+def test_listen_affiche_les_chapitres(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_chapters(
+        client,
+        media_id,
+        [
+            (0, "Introduction", 0.0, 60.0),
+            (1, "Premier chapitre", 60.0, 185.0),
+            (5, "Deuxième chapitre", 185.0, 245.0),
+        ],
+    )
+
+    response = client.get(f"/listen/{media_id}")
+    data = response.data.decode()
+
+    assert response.status_code == 200
+    assert 'id="playlist"' in data
+    # Numéro affiché = position dans la liste triée par position, pas
+    # l'index brut ffprobe (0, 1, 5 ici) - jamais montré tel quel.
+    assert ">1<" in data
+    assert ">2<" in data
+    assert ">3<" in data
+    assert "Introduction" in data
+    assert "Premier chapitre" in data
+    assert "Deuxième chapitre" in data
+    # Durée de chaque chapitre (fin - début), pas la durée totale du
+    # fichier : 60s, 125s, 60s.
+    assert f"2{NBSP}min{NBSP}05" in data
+    # Pas de coche : un chapitre n'a pas d'état "terminé" propre.
+    assert "lesson-check" not in data
+
+
+def test_listen_surligne_le_chapitre_courant(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_duration(client, media_id, 245.0)
+    set_chapters(
+        client,
+        media_id,
+        [
+            (0, "Introduction", 0.0, 60.0),
+            (1, "Milieu", 60.0, 185.0),
+            (2, "Fin", 185.0, 245.0),
+        ],
+    )
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "90"})
+
+    response = client.get(f"/listen/{media_id}")
+    data = response.data.decode()
+
+    # Le chapitre "Milieu" (position 90 dans [60, 185)) est surligné,
+    # les deux autres ne le sont pas.
+    assert 'class="file-row chapter-row current"' in data
+    assert data.count('class="file-row chapter-row ') == 3
+
+
+def test_listen_chapitre_sans_titre_naffiche_pas_de_repli(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_chapters(client, media_id, [(0, None, 0.0, 60.0)])
+
+    response = client.get(f"/listen/{media_id}")
+    data = response.data.decode()
+
+    # Le numéro et la durée restent affichés, mais rien n'est inventé
+    # à la place du titre absent - en particulier pas "Chapitre 1".
+    assert ">1<" in data
+    assert "Chapitre 1" not in data
+    assert "file-title" not in data
+
+
+def test_listen_sans_chapitres_pas_de_colonne(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+
+    response = client.get(f"/listen/{media_id}")
+    data = response.data.decode()
+
+    assert 'id="playlist"' not in data
+    assert "chapter-row" not in data
+
+
+def test_watch_naffiche_aucune_colonne_de_chapitres(client) -> None:
+    # chapters_probed_at/media_chapters ne sont pas restreints aux
+    # fichiers audio (voir library_index.py), mais l'affichage, lui,
+    # reste réservé à /listen dans cette tranche - même si des lignes
+    # existent pour une vidéo.
+    video_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_chapters(client, video_id, [(0, "Un chapitre vidéo", 0.0, 60.0)])
+
+    response = client.get(f"/watch/{video_id}")
+    data = response.data.decode()
+
+    assert "chapter-row" not in data
+    assert "Un chapitre vidéo" not in data
+
+
+def test_clic_sur_un_chapitre_deplace_la_lecture_present(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_chapters(client, media_id, [(0, "Introduction", 0.0, 60.0)])
+
+    response = client.get(f"/listen/{media_id}")
+    data = response.data.decode()
+
+    assert "player.currentTime = parseFloat(row.dataset.start)" in data
+
+
+def test_surlignage_chapitre_suit_timeupdate_present(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_chapters(client, media_id, [(0, "Introduction", 0.0, 60.0)])
+
+    response = client.get(f"/listen/{media_id}")
+    data = response.data.decode()
+
+    assert "player.addEventListener('timeupdate'" in data
+    assert "row.classList.toggle('current'" in data
 
 
 def test_bouton_hero_commencer_audiobook_jamais_commence(client) -> None:
