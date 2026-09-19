@@ -3,15 +3,26 @@
 
 {% macro playlist_row(item) %}
 {% set filename = item['relative_path'].rsplit('/', 1)[-1] %}
+{% set full_title = clean_file_title(filename) %}
+{% set number, title = split_leading_number(full_title) %}
 {% set state = progress_states.get(item['id'], 'not_started') %}
-<a class="file-row {{ 'current' if item['id'] == current_media_id else '' }}"
+{% set is_current = item['id'] == current_media_id %}
+<a class="file-row {{ 'current' if is_current else '' }}"
    href="{{ url_for('watch_video', media_id=item['id']) }}">
-    <span class="file-title" title="{{ filename }}">{{ clean_file_title(filename) }}</span>
-    <span class="file-trailing">
-        {% if state == 'completed' %}<span class="file-state file-state-done">✓ Terminé</span>
-        {% elif state == 'in_progress' %}<span class="file-state file-state-progress">En cours</span>{% endif %}
+    {% if number %}<span class="file-number">{{ number }}</span>{% endif %}
+    <span class="file-main">
+        <span class="file-title" title="{{ full_title }}">{{ title }}</span>
+        {% if is_current %}
+        <span class="file-meta">{{ format_clock(current_position_seconds) }} / {{ format_duration(item['duration_seconds']) }} · en cours</span>
+        <span class="file-position-track"><span class="file-position-fill" style="width: {{ current_position_percent }}%;"></span></span>
+        {% else %}
         <span class="file-meta">{{ format_duration(item['duration_seconds']) }}</span>
+        {% endif %}
     </span>
+    {# Coche d'affichage, pas un contrôle : ce n'est pas cliquable et ça
+       ne doit pas en avoir l'air - toucher à la progression depuis ici
+       n'est pas dans cette tranche. #}
+    <span class="lesson-check {{ 'done' if state == 'completed' else '' }}" role="img" aria-label="{{ 'Terminé' if state == 'completed' else 'Non terminé' }}">{% if state == 'completed' %}✓{% endif %}</span>
 </a>
 {% endmacro %}
 
@@ -44,7 +55,7 @@
         {{ render_note(media['item_id'], note_text, note_updated_at, player_context=player_context) }}
     </div>
 
-    <div class="playlist" id="playlist">
+    <div class="playlist" id="playlist" style="visibility: hidden;">
         {% if chapters|length == 1 and not chapters[0][0] %}
             {# Un seul groupe, à la racine de l'item : pas de sous-dossiers,
                donc pas de vrai chapitre à nommer - liste directe. #}
@@ -69,40 +80,12 @@
         {% endif %}
     </div>
 </div>
+<noscript><style>#playlist { visibility: visible !important; }</style></noscript>
 {% endblock %}
 
 {% block print %}{{ render_print_block(media['item_title']) }}{% endblock %}
 
 {% block scripts %}
-<script>
-    (function () {
-        var main = document.querySelector('.main');
-        var playlist = document.querySelector('.playlist');
-        if (!main || !playlist) {
-            return;
-        }
-
-        function syncPlaylistHeight() {
-            // Repère de palier (tokens.css : 720/1120/1440) : sous
-            // 720px, .layout passe en colonne (voir static/style.css)
-            // et la playlist suit sa propre hauteur naturelle.
-            if (window.innerWidth <= 719) {
-                playlist.style.height = '';
-                return;
-            }
-            playlist.style.height = main.offsetHeight + 'px';
-        }
-
-        if (window.ResizeObserver) {
-            new ResizeObserver(syncPlaylistHeight).observe(main);
-        } else {
-            window.addEventListener('resize', syncPlaylistHeight);
-        }
-
-        syncPlaylistHeight();
-    })();
-</script>
-
 <script>
     (function () {
         var playlist = document.getElementById('playlist');
@@ -115,7 +98,9 @@
         // fois masquerait la leçon en cours sur toute vidéo suivante
         // du même chapitre. Les autres chapitres gardent l'état
         // choisi par la personne, chapitre par chapitre, d'une vidéo
-        // à l'autre.
+        // à l'autre. Ce script s'exécute avant celui du centrage
+        // ci-dessous : rouvrir un chapitre change la hauteur de la
+        // liste, le centrage doit voir la disposition finale.
         var storageKey = 'studia-playlist-open-' + {{ media['item_id'] | tojson }};
 
         function loadState() {
@@ -152,6 +137,34 @@
                 saveState(state);
             });
         });
+
+        // Positionnement de la ligne courante. #playlist démarre masqué
+        // (visibility: hidden posé en dur dans le gabarit) : tant que ce
+        // script n'a pas calculé et appliqué la position finale, rien
+        // n'est montré à l'écran - ni le "flash" liste-en-haut-puis-
+        // repositionnée du premier affichage, ni un défilement animé
+        // perceptible en venant d'une autre vidéo. C'est pourquoi
+        // l'affectation est directe (scrollTop) et non un scrollTo animé :
+        // aucun cas ne doit se voir bouger, contrairement à ce qui était
+        // fait avant pour une navigation Précédent/Suivant/enchaînement.
+        // Chaque changement de vidéo recharge entièrement la page tant
+        // que la tranche "changement sans rechargement" n'existe pas -
+        // ce calcul doit donc se refaire, invisible, à chaque affichage.
+        var current = playlist.querySelector('.file-row.current');
+        if (current && window.innerWidth > 719) {
+            var target = current.offsetTop - playlist.clientHeight / 2
+                + current.offsetHeight / 2;
+            var max = playlist.scrollHeight - playlist.clientHeight;
+            // Borner entre 0 et max donne les deux extrémités pour rien :
+            // au début, la cible calculée est négative -> 0, la liste
+            // reste en haut et l'item descend jusqu'au centre ; à la fin,
+            // la cible dépasse max -> max, la liste est au bout et
+            // l'item continue de descendre.
+            target = Math.max(0, Math.min(target, max));
+            playlist.scrollTop = target;
+        }
+
+        playlist.style.visibility = 'visible';
     })();
 </script>
 
@@ -227,6 +240,71 @@
 
         window.addEventListener('pagehide', function () {
             sendPosition(true);
+        });
+    })();
+</script>
+
+<script>
+    (function () {
+        // Rafraîchit l'affichage de la ligne courante pendant la
+        // lecture (texte "en cours" et micro-barre de position) - un
+        // rafraîchissement d'AFFICHAGE seul, sur "timeupdate" du
+        // lecteur. L'enregistrement en base garde exactement son
+        // rythme actuel (script ci-dessus : 30s, pause, fin,
+        // fermeture) : ceci ne fait strictement aucune requête réseau.
+        // Ne touche que la ligne courante, jamais toute la liste.
+        var player = document.getElementById('player');
+        var currentRow = document.querySelector('.playlist .file-row.current');
+        if (!player || !currentRow) {
+            return;
+        }
+
+        var meta = currentRow.querySelector('.file-meta');
+        var fill = currentRow.querySelector('.file-position-fill');
+        var duration = {{ media['duration_seconds'] | tojson }};
+
+        // Mêmes règles que format_clock/format_duration côté serveur
+        // (studia.py) - dupliquées ici volontairement : ce sont des
+        // fonctions Python, inaccessibles depuis le navigateur.
+        function formatClock(seconds) {
+            seconds = Math.floor(seconds || 0);
+            var heures = Math.floor(seconds / 3600);
+            var minutes = Math.floor((seconds % 3600) / 60);
+            var secondes = seconds % 60;
+            var pad = function (n) { return n < 10 ? '0' + n : '' + n; };
+            return heures
+                ? heures + ':' + pad(minutes) + ':' + pad(secondes)
+                : minutes + ':' + pad(secondes);
+        }
+
+        function formatDuration(seconds) {
+            if (!seconds) {
+                return '—';
+            }
+            var NBSP = ' ';
+            seconds = Math.floor(seconds);
+            var heures = Math.floor(seconds / 3600);
+            var reste = seconds % 3600;
+            var minutes = Math.floor(reste / 60);
+            var secondes = reste % 60;
+            var pad = function (n) { return n < 10 ? '0' + n : '' + n; };
+            if (heures) {
+                return heures + NBSP + 'h' + NBSP + pad(minutes);
+            }
+            if (minutes) {
+                return minutes + NBSP + 'min' + NBSP + pad(secondes);
+            }
+            return secondes + NBSP + 's';
+        }
+
+        player.addEventListener('timeupdate', function () {
+            if (meta) {
+                meta.textContent = formatClock(player.currentTime) + ' / '
+                    + formatDuration(duration) + ' · en cours';
+            }
+            if (fill && duration) {
+                fill.style.width = Math.min(player.currentTime / duration * 100, 100) + '%';
+            }
         });
     })();
 </script>

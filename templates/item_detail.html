@@ -2,6 +2,7 @@
 {% from "_note_widget.html" import render_note, render_print_block %}
 {% from "_metadata_field.html" import metadata_field %}
 {% from "_type_icon.html" import type_icon %}
+{% from "_progress_bar.html" import progress_bar %}
 
 {% macro manual_form(item_id, current=none) %}
 <form class="manual-form" method="post" action="{{ url_for('book_manual', item_id=item_id) }}">
@@ -74,6 +75,13 @@
 
             {% if hero_meta %}
             <div class="hero-meta">{{ hero_meta }}</div>
+            {% endif %}
+
+            {% if progress_status != 'not_started' %}
+            <div class="hero-progress">
+                {{ progress_bar(progress_percent) }}
+                <div class="hero-progress-summary">{{ progress_summary_line }}</div>
+            </div>
             {% endif %}
 
             {% if first_playable_media_id %}
@@ -216,8 +224,8 @@
             {% else %}
             {% set plural = completed_media_count >= 2 %}
             Effacer la progression de <strong>{{ item['title'] }}</strong> et
-            recommencer depuis le début ? {{ completed_media_count }}
-            vidéo{{ 's' if plural }} terminée{{ 's' if plural }} sur
+            recommencer depuis le début ? {{ completed_media_count }}{{ NBSP }}vidéo{{ 's' if plural }}
+            terminée{{ 's' if plural }} sur
             {{ tracked_media_count }}.
             {% if has_in_progress_media %}
             La position des vidéos en cours sera aussi effacée.

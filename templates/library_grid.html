@@ -1,5 +1,6 @@
 {% extends "_base.html" %}
 {% from "_type_icon.html" import type_icon %}
+{% from "_progress_bar.html" import progress_bar %}
 
 {% block title %}Studia{% endblock %}
 
@@ -65,13 +66,8 @@
                 {% if item['author'] %}
                 <div class="card-author" title="{{ item['author'] }}">{{ item['author'] }}</div>
                 {% endif %}
-                {% if item['progress_status'] == 'in_progress' %}
-                <div class="card-progress">
-                    <div class="progress-track"><div class="progress-fill" style="width: {{ item['progress_percent'] }}%;"></div></div>
-                    <span class="progress-label">{{ item['progress_percent'] }} %</span>
-                </div>
-                {% elif item['progress_status'] == 'completed' %}
-                <div class="card-progress-done">100 %</div>
+                {% if item['progress_status'] != 'not_started' %}
+                {{ progress_bar(item['progress_percent']) }}
                 {% endif %}
                 {% if item['meta_line'] %}
                 <div class="meta">{{ item['meta_line'] }}</div>

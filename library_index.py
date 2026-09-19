@@ -43,6 +43,12 @@ def natural_key(text: str) -> list:
     ]
 
 
+# Espace insécable : un nombre et l'unité qui le suit ("258 vidéos",
+# "5 h 44") ne doivent jamais se retrouver coupés entre deux lignes -
+# voir format_duration ci-dessous et son usage dans studia.py.
+NBSP = " "
+
+
 def format_duration(seconds: float | None) -> str:
     if not seconds:
         return "—"
@@ -52,12 +58,12 @@ def format_duration(seconds: float | None) -> str:
     minutes, secondes = divmod(reste, 60)
 
     if heures:
-        return f"{heures} h {minutes:02d}"
+        return f"{heures}{NBSP}h{NBSP}{minutes:02d}"
 
     if minutes:
-        return f"{minutes} min {secondes:02d}"
+        return f"{minutes}{NBSP}min{NBSP}{secondes:02d}"
 
-    return f"{secondes} s"
+    return f"{secondes}{NBSP}s"
 
 
 def connect_database(db_path: Path) -> sqlite3.Connection:

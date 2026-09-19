@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from library_index import format_duration, scan_library  # noqa: E402
+from library_index import NBSP, format_duration, scan_library  # noqa: E402
 from studia import create_app  # noqa: E402
 
 
@@ -290,7 +290,12 @@ def test_lecteur_video_sans_position_ne_cherche_pas_a_reprendre(client) -> None:
     data = response.data.decode()
 
     assert response.status_code == 200
-    assert "loadedmetadata" not in data
+    # "loadedmetadata" seul ne suffit plus à repérer ce script
+    # précisément : le centrage automatique de la playlist (tranche
+    # "progression visible") s'y abonne aussi, sans rapport avec la
+    # reprise. Le marqueur propre à la reprise reste
+    # "player.currentTime =" (voir test_progress.py).
+    assert "player.currentTime =" not in data
 
 
 def test_lecteur_video_affiche_precedent_et_suivant(client) -> None:
@@ -634,7 +639,7 @@ def test_item_avec_titre_auteur_tres_longs_et_beaucoup_de_chapitres(
 
         assert response.status_code == 200
         assert format_duration(total_seconds) in data
-        assert "124 chapitres" in data
+        assert f"124{NBSP}chapitres" in data
         assert long_title in data
         assert long_author in data
         assert data.count('class="programme-chapter"') == 124

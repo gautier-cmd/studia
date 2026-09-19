@@ -610,12 +610,20 @@ Cinq corrections demandées par Gautier :
 4. **Lecteur vidéo** (`templates/video_player.html`) : la note
    (`render_note`) est remontée juste sous les boutons précédent/
    suivant, dans la même colonne que la vidéo, au lieu d'une ligne
-   pleine largeur séparée en dessous. La playlist (`.playlist`) est
-   maintenant calée sur la hauteur de cette colonne par un script
+   pleine largeur séparée en dessous. La playlist (`.playlist`) était
+   calée sur la hauteur de cette colonne par un script
    (`ResizeObserver` sur `.main`, hauteur recopiée sur `.playlist`) —
-   préféré à un `align-items: stretch` en CSS, dont le comportement
-   avec une liste très longue (258 vidéos sur Motion Design) et un
-   `overflow-y: auto` était incertain sans test réel.
+   préféré à l'époque à un `align-items: stretch` en CSS, dont le
+   comportement avec une liste très longue (258 vidéos sur Motion
+   Design) et un `overflow-y: auto` était incertain sans test réel.
+   **Remplacé depuis** (tranche "Progression visible et liste de
+   lecture" ci-dessous) par `position: sticky` : le `ResizeObserver`
+   recopiait la hauteur totale de `.main` (vidéo + notes), qui pouvait
+   largement dépasser la hauteur de l'écran sur une note longue — d'où
+   un double défilement, et un centrage automatique faussé (calculé
+   sur cette hauteur périmée). Le CSS seul borne désormais `.playlist`
+   à la hauteur visible du viewport, sans dépendre d'un script ni de
+   son minutage.
 5. **Badges en français** : BOOK/COURSE/AUDIOBOOK → LIVRE/FORMATION/
    AUDIOBOOK (`BADGE_LABELS` dans studia.py, fonction `badge_label()`).
 
@@ -1050,12 +1058,13 @@ Gautier) :
   livre audio à 40 % affiche 40 %, pas 0 ou 100 par paliers.
 
 **Bouton hero et message.** `resolve_hero_cta(item_type,
-progress_status)` renvoie le verbe (Regarder/Écouter/Reprendre —
-vocabulaire déjà réservé, voir la tranche 6) et l'endpoint
+progress_status)` renvoie le verbe et l'endpoint
 (`watch_video`/`listen_audio`). `first_video_id` devient
 `first_playable_media_id`, générique au type. Le message "Ce format ne
 peut pas encore être lu dans l'application." se resserre sur
-`item_type == 'book'` seul.
+`item_type == 'book'` seul. (Le verbe lui-même est devenu neutre
+— Commencer/Continuer/Revoir — dans une tranche ultérieure, voir
+"Tout recommencer" ci-dessous.)
 
 **Repère de note.** Le motif reconnu (`MARKER_PATTERN`,
 _note_widget.html) accepte `/watch/id?t=secondes` et
@@ -1082,6 +1091,129 @@ lui confirmé indépendamment par curl et par pytest ; la lecture audio
 réelle dans un navigateur reste à confirmer par Gautier lui-même.
 
 `pytest tests/` (145 tests) au vert.
+
+### "Tout recommencer" (fait)
+
+Remplace trois essais successifs, écartés dans la même tranche : un
+contrôle de remise à zéro par média (icône, puis bouton texte) dans le
+Programme et la playlist, puis un bouton icône seule dans le hero
+(flèche circulaire façon Jellyfin) — retirés parce que glisser la
+barre de lecture est plus rapide et que personne ne devine ce qu'une
+icône seule efface. `POST /media/<id>/reset-progress`, devenue sans
+appelant, est supprimée plutôt que laissée morte.
+
+Ce qui reste : un seul bouton texte "Tout recommencer" dans le hero,
+visible seulement s'il y a une progression à effacer (à côté du CTA
+principal, jamais dans le menu ⋮ — une action de lecture, pas de
+maintenance). Une seule boîte de dialogue, titre en gras plutôt qu'entre
+guillemets français (qui se cassent mal sur un titre long), qui nomme
+précisément ce qui va disparaître — décompte des vidéos terminées plus
+une phrase sur la position des vidéos en cours quand elle existe
+(`has_in_progress_media`), ou la position d'écoute pour un audiobook.
+Une case à cocher obligatoire («&nbsp;Je comprends que cette action est
+définitive.&nbsp;») garde le bouton de validation désactivé tant qu'elle
+n'est pas cochée, et se décoche à chaque fermeture de la boîte (croix,
+"Annuler", clic hors du cadre, Échap — tous explicitement câblés,
+jamais le seul évènement natif `close`, jamais fiable ici à l'usage).
+Confirmer efface tout et enchaîne directement sur la lecture depuis le
+début, plutôt que de rester sur la fiche.
+
+`resolve_hero_cta` renvoie un verbe neutre, identique aux deux types
+suivis (Commencer/Continuer/Revoir) — "Regarder", "Écouter" et
+"Reprendre" ont disparu de l'interface, seul l'endpoint choisi
+(`watch_video`/`listen_audio`) dépend encore du type.
+
+`pytest tests/` (167 tests) au vert.
+
+### Progression visible et liste de lecture (fait)
+
+Trois écrans, un seul composant de barre (`_progress_bar.html`,
+`progress_bar(percent)`) partagé entre la carte de la grille et le
+hero de la fiche — jamais un second calcul, le pourcentage vient
+toujours de `compute_item_progress_percent` via `fetch_item_media_progress`.
+
+- **Barre à 100 %.** Revient sur la décision d'origine (section 17 de
+  la spec) : à 100 %, même barre pleine qu'aux autres valeurs, avec son
+  "100 %", plutôt qu'un texte seul sans barre. `.card-progress-done`
+  supprimée, devenue inutile.
+- **Fiche.** Même barre, pleine largeur de `.hero-info` (qui aligne ses
+  enfants sur leur propre largeur par défaut, contrairement à
+  `.card-body` — `align-self: stretch` posé exprès), entre la ligne de
+  métadonnées et la rangée d'actions. Une ligne de texte dessous
+  (`build_progress_summary_line`) : "37 % · 18 vidéos sur 49" pour une
+  formation (même accord 0/1/2+ que la boîte "Tout recommencer"),
+  "42 % · 1 h 12 sur 3 h 05" pour un audiobook (position/durée, pas de
+  décompte de fichiers — il n'y en a qu'un). Rien du tout si jamais
+  ouvert, ni pour un livre (pas de progression).
+- **Ligne de playlist**, refonte complète (`/watch` uniquement — le
+  Programme de la fiche n'y touche pas) : numéro de tête séparé du
+  titre (`split_leading_number`, ex. "001 - Interface" ->
+  numéro "001" + titre "Interface" ; le nom de fichier réel et son tag
+  ne changent pas, seul l'affichage sépare les deux), titre en gras sur
+  deux lignes, durée en petit dessous. Retour à la ligne aux espaces
+  uniquement, avec un filet de secours (`overflow-wrap: break-word`)
+  pour le seul cas d'un mot unique plus long que la colonne. La césure
+  automatique (`hyphens: auto`) essayée d'abord a été retirée : le
+  dictionnaire du navigateur coupe mal des noms de fichiers dont les
+  accents ont été retirés (ex. "auteurs" coupé en "au-teurs"). Le mot
+  "Terminé" disparaît des lignes : une coche d'affichage à droite
+  (`.lesson-check`, rond avec ✓ ou vide, `role="img"` + `aria-label`
+  puisqu'elle n'est plus un texte) le dit à la place - jamais cliquable,
+  jamais un contrôle, et jamais mise à jour en direct (voir "Affichage
+  en direct" ci-dessous). La vidéo en cours (`current_media_id`,
+  indépendant de son propre état terminé/non terminé) affiche à la
+  place de sa durée seule "0:10 / 11 min 28 · en cours" (`format_clock`,
+  horodatage compact, distinct de `format_duration`) plus une
+  micro-barre de position sous le titre. Ligne passée d'environ 30 à
+  48px : assumé, jugé à l'usage sur les 258 vidéos de Motion Design.
+- **Affichage en direct de la ligne courante.** Le texte et la
+  micro-barre de position de la ligne en cours se mettent à jour sur
+  l'évènement `timeupdate` du lecteur, pas seulement au chargement de
+  la page — sans écriture serveur supplémentaire, la sauvegarde de
+  position garde exactement le même rythme qu'avant (30 s/pause/fin/
+  fermeture). Seule cette ligne est touchée, jamais toute la liste. La
+  coche "terminé" (`.lesson-check`), elle, reste volontairement
+  statique : elle ne reflète que le dernier état enregistré par le
+  serveur, jamais recalculée en direct pendant la lecture — cette coche
+  ne redescend jamais une fois vraie (voir "Coche définitive"
+  ci-dessus), et la faire vivre en direct pendant qu'on avance/recule
+  dans la vidéo aurait exigé de rejouer cette même règle côté
+  navigateur, avec un risque de scintillement pendant qu'on cherche une
+  position, pour un bénéfice mineur (elle finit de toute façon à jour
+  à la prochaine navigation).
+- **Espaces insécables.** Toute construction nombre + unité (durées -
+  "5 h 44", "2 min 30", "55 s" -, décomptes - "49 vidéos", "27
+  chapitres" -, pourcentage de la ligne de résumé de progression)
+  utilise une espace insécable (`NBSP`, U+00A0) entre le nombre et le
+  mot qui suit, pour que le bloc ne se coupe jamais au milieu à
+  l'affichage.
+- **Défilement automatique** de la playlist sur la vidéo en cours.
+  Centre la ligne courante (`current.offsetTop - clientHeight/2 +
+  offsetHeight/2`, borné entre 0 et `scrollHeight - clientHeight`) — le
+  bornage donne les deux extrémités sans cas particulier : négatif à un
+  mot dans "les 15 premières vidéos" -> 0 (liste en haut, l'item
+  descend jusqu'au centre), au-delà de max dans "les 15 dernières" ->
+  max (liste au bout, l'item continue de descendre). Le calcul ne
+  dépend plus de `loadedmetadata` ni d'aucun script de mesure : depuis
+  que `.playlist` est bornée en pur CSS (`position: sticky`,
+  `max-height: calc(100vh - ...)`, voir la correction à la Tranche 6
+  ci-dessus), sa hauteur est stable dès le rendu de la page, le script
+  de centrage s'exécute donc directement. Animé (`scrollTo({behavior:
+  'smooth'})`) en venant d'un autre `/watch` (Précédent/Suivant,
+  enchaînement — détecté via `document.referrer`), instantané sinon
+  (arrivée directe depuis la fiche, URL tapée).
+
+  Vérifié réellement dans le navigateur : les trois bornes (`scrollTop`
+  resté à 0 en début de liste, mesuré égal au calcul manuel au milieu,
+  bloqué au maximum en fin de liste) confirmées sur Motion Design avec
+  le nouveau mécanisme sticky. Vérifié aussi que `.playlist` ne dépasse
+  jamais la hauteur de l'écran, y compris avec une colonne de notes
+  simulée bien plus haute que le viewport (défilement de `.main` seul,
+  `.playlist` fixe). Reste à confirmer par Gautier : la distinction
+  animé/instantané elle-même (dépend de `document.referrer`, non
+  vérifiable en naviguant par URL directe dans cette suite).
+
+`pytest tests/` (187 tests) au vert.
 
 ## Méthode — backlog
 

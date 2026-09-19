@@ -1,0 +1,6 @@
+{% macro progress_bar(percent) %}
+<div class="card-progress">
+    <div class="progress-track"><div class="progress-fill" style="width: {{ percent }}%;"></div></div>
+    <span class="progress-label">{{ percent }} %</span>
+</div>
+{% endmacro %}

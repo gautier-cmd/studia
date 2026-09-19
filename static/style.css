@@ -500,6 +500,22 @@ body.page-grid .header nav a:hover {
     margin: var(--space-4) 0;
 }
 
+/* Même composant que la carte de la grille (.card-progress, voir
+   _progress_bar.html) : .hero-info aligne ses enfants sur leur propre
+   largeur (flex-start) par défaut, contrairement à .card-body - sans
+   stretch, la barre resterait aussi étroite que "100 %". */
+.hero-progress {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+}
+
+.hero-progress-summary {
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-metadata);
+}
+
 .hero-actions {
     display: flex;
     align-items: center;
@@ -1106,10 +1122,13 @@ body.page-player .card {
     color: var(--color-text-secondary);
 }
 
-/* Progression sur la carte de la grille (section 17 de la spec) : rien
-   si l'item n'a jamais été ouvert (pas de bloc du tout, voir le
-   gabarit) ; barre + pourcentage en cours ; simplement "100 %" une
-   fois terminé, sans barre ni badge supplémentaire. */
+/* Progression (carte de la grille et hero de la fiche, voir
+   _progress_bar.html - même composant, jamais une seconde
+   implémentation) : rien si l'item n'a jamais été ouvert (pas de bloc
+   du tout, voir le gabarit appelant) ; barre + pourcentage à toute
+   autre valeur, y compris 100 % - décision révisée depuis la première
+   version de cette carte (section 17 de la spec), qui affichait "100 %"
+   seul, sans barre, une fois terminé. */
 
 .card-progress {
     display: flex;
@@ -1137,11 +1156,6 @@ body.page-player .card {
     color: var(--color-text-secondary);
     min-width: 2.5em;
     text-align: right;
-}
-
-.card-progress-done {
-    font-size: var(--font-size-annotation);
-    color: var(--color-accent);
 }
 
 /* Fiche d'un item : liste de fichiers */
@@ -1549,9 +1563,19 @@ audio {
     flex-shrink: 0;
     background: var(--color-surface);
     border-radius: var(--radius-lg);
-    /* Hauteur imposée en JS pour correspondre exactement à .main
-       (vidéo + boutons + note), qui peut varier — pas de hauteur fixe
-       ici. Défile en interne si la liste est plus longue que ça. */
+    /* Ancrée en haut de la fenêtre visible, jamais plus haute qu'elle
+       (calc(100vh - ...), le même espace que le padding de .layout en
+       haut et en bas) : sur une formation longue, .main (vidéo +
+       boutons + notes) dépasse largement l'écran, la liste ne doit
+       pas le suivre - elle reste affichée et défile en interne
+       pendant qu'on fait défiler la page pour lire les notes.
+       Remplace un ResizeObserver (tranche 6) qui recopiait la hauteur
+       de .main sur .playlist : correct tant que .main tenait dans
+       l'écran, mais une valeur purement CSS n'a plus ce problème et
+       suit le redimensionnement de la fenêtre sans JS. */
+    position: sticky;
+    top: var(--space-20);
+    max-height: calc(100vh - var(--space-40));
     overflow-y: auto;
 }
 
@@ -1601,20 +1625,22 @@ audio {
     padding-bottom: var(--space-8);
 }
 
+/* Ligne de playlist (tranche "progression visible") : numéro, titre
+   complet sur deux lignes avec césure, durée (ou position + micro-barre
+   pour la vidéo en cours) et une coche d'affichage - plus de troncature
+   par "…", plus de badge texte "Terminé"/"En cours". ~48px de haut
+   plutôt que ~30 : assumé, jugé à l'usage sur les 258 vidéos de Motion
+   Design. */
 .playlist .file-row {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--space-8);
     padding: var(--space-8) var(--space-16);
     border-bottom: none;
     text-decoration: none;
     color: var(--color-text-secondary);
     font-size: var(--font-size-nav);
     border-left: 3px solid transparent;
-}
-
-.playlist .file-row .file-title {
-    -webkit-line-clamp: 1;
 }
 
 .playlist .file-row:hover {
@@ -1625,7 +1651,80 @@ audio {
     background: var(--color-selected-bg);
     border-left-color: var(--color-accent);
     color: var(--color-text);
+}
+
+.file-number {
+    flex-shrink: 0;
+    width: 22px;
+    padding-top: 1px;
+    color: var(--color-text-tertiary);
+    font-size: var(--font-size-annotation);
+    text-align: right;
+}
+
+.file-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+}
+
+.playlist .file-row .file-title {
     font-weight: var(--font-weight-semibold);
+    color: var(--color-text);
+    /* Pas de "hyphens: auto" : ces titres sont des noms de fichiers
+       aux accents retirés, le navigateur n'a aucun moyen de les couper
+       correctement au bon endroit ("les droits d au-teurs", faux).
+       Retour à la ligne aux espaces uniquement - "overflow-wrap" reste
+       un garde-fou de dernier recours, pour l'unique cas d'un mot plus
+       long que la colonne, jamais sur un titre normal. */
+    overflow-wrap: break-word;
+}
+
+.playlist .file-row .file-meta {
+    margin-left: 0;
+    color: var(--color-text-tertiary);
+    font-size: var(--font-size-annotation);
+    white-space: normal;
+}
+
+.file-position-track {
+    display: block;
+    height: 3px;
+    border-radius: var(--radius-full);
+    background: var(--color-progress-track);
+    overflow: hidden;
+}
+
+.file-position-fill {
+    display: block;
+    height: 100%;
+    background: var(--color-accent);
+    border-radius: var(--radius-full);
+}
+
+/* Coche d'affichage, jamais interactive (voir le gabarit) : un rond
+   plein avec ✓ une fois terminé, vide sinon. */
+.lesson-check {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    margin-top: 1px;
+    border-radius: 50%;
+    border: 1.5px solid var(--color-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    line-height: 1;
+    color: transparent;
+}
+
+.lesson-check.done {
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+    color: var(--color-bg);
 }
 
 /* Tablette (720–1119px) : toujours côte à côte, mais le programme
@@ -1646,6 +1745,10 @@ audio {
     }
 
     .playlist {
+        /* En dessous de la vidéo, plus jamais à côté (voir .layout
+           ci-dessus) : rien à ancrer en haut de la fenêtre ici, garde
+           son comportement d'origine. */
+        position: static;
         width: 100%;
         max-height: 40vh;
     }

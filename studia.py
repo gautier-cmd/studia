@@ -16,7 +16,7 @@ from pathlib import Path
 
 from flask import Flask, abort, redirect, render_template, request, send_file, url_for
 
-from library_index import connect_database, format_duration, now_iso
+from library_index import NBSP, connect_database, format_duration, now_iso
 from presentation import parse_presentation
 from book_metadata import default_query, find_isbn, search_candidates
 from covers import cover_cache_dir, cover_cache_path
@@ -101,6 +101,10 @@ LOCAL_USER_ID = 1
 # courte.
 PROGRESS_COMPLETION_MARGIN_RATIO = 0.05
 PROGRESS_COMPLETION_MARGIN_CAP_SECONDS = 15.0
+
+# Numéro de tête d'un nom de fichier déjà nettoyé de son extension
+# ("001 - Interface" -> "001" / "Interface"), voir split_leading_number.
+LEADING_NUMBER_PATTERN = re.compile(r"^(\d+)\s*-\s*(.+)$")
 
 # Mot au pluriel selon le media_type réellement présent dans l'item
 # (pas selon son item_type) — un seul type par item depuis la
@@ -207,7 +211,7 @@ def _media_label(count: int, distinct_type_count: int, sample_type: str | None) 
         label = MEDIA_TYPE_LABELS.get(sample_type, "médias")
     else:
         label = "médias"
-    return f"{count} {label}"
+    return f"{count}{NBSP}{label}"
 
 
 def describe_media_count(media_rows) -> str | None:
@@ -221,7 +225,7 @@ def describe_count(count: int, plural_word: str) -> str | None:
 
     if count < 2:
         return None
-    return f"{count} {plural_word}"
+    return f"{count}{NBSP}{plural_word}"
 
 
 def build_meta_line(*segments: str | None) -> str:
@@ -450,6 +454,69 @@ def compute_item_progress_percent(item_type: str, media_progress: list[dict]) ->
     total = len(media_progress)
     completed_count = sum(1 for m in media_progress if m["completed"])
     return round(completed_count / total * 100)
+
+
+def build_progress_summary_line(
+    item_type: str,
+    percent: int,
+    completed_count: int,
+    tracked_count: int,
+    position_seconds: float | None,
+    duration_seconds: float | None,
+) -> str:
+    """Ligne affichée sous la barre de progression du hero (fiche) -
+    le pourcentage vient toujours de compute_item_progress_percent,
+    jamais recalculé ici.
+
+    Formation : "37 % · 18 vidéos sur 49", même accord que la boîte de
+    dialogue "Tout recommencer" (0/1 singulier, 2+ pluriel). Audiobook :
+    "42 % · 1 h 12 sur 3 h 05" - un seul fichier n'a pas de vidéos à
+    compter, la position et la durée disent la même chose plus
+    directement.
+    """
+
+    if item_type == "audiobook":
+        return (
+            f"{percent}{NBSP}% · {format_duration(position_seconds)} sur "
+            f"{format_duration(duration_seconds)}"
+        )
+
+    plural = completed_count >= 2
+    return (
+        f"{percent}{NBSP}% · {completed_count}{NBSP}vidéo{'s' if plural else ''} "
+        f"sur {tracked_count}"
+    )
+
+
+def format_clock(seconds: float | None) -> str:
+    """Horodatage compact ("0:10", "1:23:45") - distinct de
+    format_duration ("11 min 28"), réservé à une position précise dans
+    un fichier (repère de note, ligne "en cours" de la playlist), pas à
+    une durée totale."""
+
+    total = int(seconds or 0)
+    heures, reste = divmod(total, 3600)
+    minutes, secondes = divmod(reste, 60)
+
+    if heures:
+        return f"{heures}:{minutes:02d}:{secondes:02d}"
+
+    return f"{minutes}:{secondes:02d}"
+
+
+def split_leading_number(title: str) -> tuple[str | None, str]:
+    """Sépare le numéro de tête d'un titre de fichier déjà nettoyé de
+    son extension ("001 - Interface" -> ("001", "Interface")), pour la
+    playlist du lecteur vidéo - le reste de l'app continue d'afficher
+    le titre complet tel quel (clean_file_title), ceci n'en change pas
+    le contenu ni la donnée sous-jacente."""
+
+    match = LEADING_NUMBER_PATTERN.match(title)
+
+    if not match:
+        return None, title
+
+    return match.group(1), match.group(2)
 
 
 def fetch_item_media_progress(conn, item_id: int, item_type: str) -> dict:
@@ -1269,6 +1336,10 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                     audio_progress = fetch_media_progress(conn, audiobook_media["id"])
                     if audio_progress is not None:
                         audiobook_position_seconds = audio_progress["position_seconds"]
+
+            # Même fonction que la carte de la grille pour le
+            # pourcentage du hero - jamais un second calcul.
+            item_progress = fetch_item_media_progress(conn, item_id, item["item_type"])
         finally:
             conn.close()
 
@@ -1314,6 +1385,20 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         )
 
         total_duration = sum(m["duration_seconds"] or 0 for m in media_rows)
+
+        # Barre de progression du hero : rien si jamais ouvert (voir le
+        # gabarit), sinon même pourcentage que la carte de la grille.
+        progress_percent = item_progress["percent"]
+        progress_summary_line = None
+        if progress_status != "not_started":
+            progress_summary_line = build_progress_summary_line(
+                item["item_type"],
+                progress_percent,
+                completed_media_count,
+                tracked_media_count,
+                audiobook_position_seconds,
+                total_duration,
+            )
 
         presentation_resource = next(
             (r for r in resources if r["resource_type"] == "presentation"),
@@ -1387,6 +1472,8 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             tracked_media_count=tracked_media_count,
             has_in_progress_media=has_in_progress_media,
             audiobook_position_seconds=audiobook_position_seconds,
+            progress_percent=progress_percent,
+            progress_summary_line=progress_summary_line,
             progress_status=progress_status,
             progress_states=progress_states,
             total_duration=total_duration,
@@ -1397,6 +1484,7 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             clean_file_title=clean_file_title,
             resource_type_label=resource_type_label,
             cover_source=cover_source,
+            NBSP=NBSP,
         )
 
     @app.route("/item/<int:item_id>/note", methods=["POST"])
@@ -1648,11 +1736,25 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         if seek_seconds is None:
             seek_seconds = resolve_resume_seconds(stored_progress)
 
+        # Ligne "0:10 / 11 min 28 · en cours" de la playlist (voir
+        # playlist_row) : 0 par défaut, une vidéo jamais ouverte est
+        # bien "en cours à 0:00" dès qu'elle est chargée dans le lecteur.
+        current_position_seconds = (
+            stored_progress["position_seconds"] if stored_progress else 0.0
+        )
+        current_position_percent = 0
+        if media["duration_seconds"]:
+            current_position_percent = min(
+                current_position_seconds / media["duration_seconds"] * 100, 100
+            )
+
         return render_template(
             "video_player.html",
             media=media,
             chapters=chapters,
             current_media_id=media_id,
+            current_position_seconds=current_position_seconds,
+            current_position_percent=current_position_percent,
             prev_id=prev_id,
             next_id=next_id,
             seek_seconds=seek_seconds,
@@ -1666,6 +1768,8 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                 "media_id": media_id,
             },
             clean_file_title=clean_file_title,
+            split_leading_number=split_leading_number,
+            format_clock=format_clock,
             format_duration=format_duration,
         )
 

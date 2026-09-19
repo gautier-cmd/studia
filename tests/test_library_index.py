@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from library_index import (  # noqa: E402
+    NBSP,
     SCHEMA_VERSION,
     format_duration,
     natural_key,
@@ -129,11 +130,13 @@ def test_parent_of() -> None:
 
 
 def test_format_duration() -> None:
+    # Espace insécable entre le nombre et son unité (voir NBSP) : le
+    # bloc entier ne doit jamais se couper entre deux lignes.
     assert format_duration(None) == "—"
     assert format_duration(0) == "—"
-    assert format_duration(45) == "45 s"
-    assert format_duration(125) == "2 min 05"
-    assert format_duration(3725) == "1 h 02"
+    assert format_duration(45) == f"45{NBSP}s"
+    assert format_duration(125) == f"2{NBSP}min{NBSP}05"
+    assert format_duration(3725) == f"1{NBSP}h{NBSP}02"
 
 
 def test_probe_duration_sur_faux_fichier(tmp_path: Path) -> None:

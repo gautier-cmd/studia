@@ -23,22 +23,88 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from library_index import scan_library  # noqa: E402
+from library_index import NBSP, scan_library  # noqa: E402
 from studia import (  # noqa: E402
     aggregate_item_progress,
+    build_progress_summary_line,
     compute_item_progress_percent,
     create_app,
     fetch_item_media_progress,
+    format_clock,
     is_video_completed,
     resolve_hero_cta,
     resolve_resume_seconds,
     resolve_watch_target_media_id,
+    split_leading_number,
 )
 
 
 def make_file(path: Path, content: bytes = b"x") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
+
+
+# --- split_leading_number : numéro / titre de la ligne de playlist -----
+
+
+def test_split_leading_number_avec_numero() -> None:
+    assert split_leading_number("001 - Interface") == ("001", "Interface")
+
+
+def test_split_leading_number_avec_tirets_dans_le_reste() -> None:
+    # Seul le numéro de tête est séparé - le reste du titre, tirets
+    # compris, n'est jamais retouché.
+    assert split_leading_number("003 - Phase 1 - Illustration madame Lee") == (
+        "003",
+        "Phase 1 - Illustration madame Lee",
+    )
+
+
+def test_split_leading_number_sans_numero() -> None:
+    assert split_leading_number("Introduction") == (None, "Introduction")
+
+
+# --- format_clock : horodatage compact, distinct de format_duration ----
+
+
+def test_format_clock_secondes_seules() -> None:
+    assert format_clock(10) == "0:10"
+
+
+def test_format_clock_minutes() -> None:
+    assert format_clock(688) == "11:28"
+
+
+def test_format_clock_heures() -> None:
+    assert format_clock(4320) == "1:12:00"
+
+
+def test_format_clock_sans_valeur() -> None:
+    assert format_clock(None) == "0:00"
+
+
+# --- build_progress_summary_line : ligne sous la barre du hero ---------
+
+
+def test_build_progress_summary_line_formation_pluriel() -> None:
+    assert (
+        build_progress_summary_line("course", 37, 18, 49, None, None)
+        == f"37{NBSP}% · 18{NBSP}vidéos sur 49"
+    )
+
+
+def test_build_progress_summary_line_formation_singulier() -> None:
+    assert (
+        build_progress_summary_line("course", 2, 1, 49, None, None)
+        == f"2{NBSP}% · 1{NBSP}vidéo sur 49"
+    )
+
+
+def test_build_progress_summary_line_audiobook() -> None:
+    assert (
+        build_progress_summary_line("audiobook", 42, 0, 0, 4320.0, 11106.0)
+        == f"42{NBSP}% · 1{NBSP}h{NBSP}12 sur 3{NBSP}h{NBSP}05"
+    )
 
 
 # --- is_video_completed : règle du "terminé" ---------------------------
@@ -404,6 +470,48 @@ def test_bouton_regarder_repart_de_la_premiere_video_si_tout_est_termine(
     assert f'class="btn-primary" href="/watch/{first_id}"' in data
 
 
+def test_centrage_playlist_present(client) -> None:
+    # Non-régression sur le gabarit rendu, même principe que le
+    # garde-fou "played" ci-dessous : pas de navigateur dans cette
+    # suite pour vérifier le défilement réel, seulement la présence du
+    # mécanisme. Plus de dépendance à "loadedmetadata" ni à un
+    # ResizeObserver depuis que la hauteur de .playlist est purement
+    # CSS (position: sticky) - le script s'exécute directement.
+    # Positionnement direct (scrollTop), jamais animé (scrollTo/smooth) :
+    # la liste reste masquée (visibility: hidden) jusqu'à être
+    # positionnée, pour qu'aucun mouvement ne soit visible à l'écran.
+    current_id = media_id_by_relative_path(
+        client, "01 - Bases/001 - Interface.mp4"
+    )
+
+    response = client.get(f"/watch/{current_id}")
+    data = response.data.decode()
+
+    assert "playlist.scrollTop = target" in data
+    assert "scrollTo(" not in data
+    assert "document.referrer" not in data
+    assert 'id="playlist" style="visibility: hidden;"' in data
+    assert "playlist.style.visibility = 'visible'" in data
+    assert "new ResizeObserver" not in data
+    assert "syncPlaylistHeight" not in data
+
+
+def test_rafraichissement_direct_de_la_ligne_courante_present(client) -> None:
+    # Idem : le rafraîchissement d'affichage sur "timeupdate" n'est
+    # vérifiable qu'en présence dans le gabarit rendu, pas en exécution
+    # réelle dans cette suite.
+    current_id = media_id_by_relative_path(
+        client, "01 - Bases/001 - Interface.mp4"
+    )
+
+    response = client.get(f"/watch/{current_id}")
+    data = response.data.decode()
+
+    assert "timeupdate" in data
+    assert "fill.style.width" in data
+    assert "meta.textContent" in data
+
+
 def test_enchainement_automatique_garde_fou_present(client) -> None:
     # Non-régression sur le gabarit uniquement (voir docstring du
     # fichier) : le garde-fou "played" doit rester en place autour de
@@ -507,7 +615,10 @@ def test_carte_en_cours_montre_barre_et_pourcentage(client) -> None:
     assert "card-progress-done" not in data
 
 
-def test_carte_terminee_montre_100_pourcent_sans_barre(client) -> None:
+def test_carte_terminee_montre_100_pourcent_avec_barre_pleine(client) -> None:
+    # Revenu sur la décision d'origine (section 17 de la spec) : à
+    # 100 %, même composant qu'aux autres valeurs plutôt qu'un texte
+    # seul sans barre.
     first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
     second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
     set_duration(client, first_id, 100.0)
@@ -518,9 +629,10 @@ def test_carte_terminee_montre_100_pourcent_sans_barre(client) -> None:
     response = client.get("/")
     data = response.data.decode()
 
-    assert 'class="card-progress-done"' in data
+    assert 'class="card-progress"' in data
+    assert "width: 100%;" in data
     assert "100 %" in data
-    assert 'class="card-progress"' not in data
+    assert "card-progress-done" not in data
 
 
 # --- Libellé du bouton hero ----------------------------------------------
@@ -614,7 +726,58 @@ def test_etats_de_lecon_dans_la_playlist(client) -> None:
     response = client.get(f"/watch/{second_id}")
     data = response.data.decode()
 
-    assert '<span class="file-state file-state-done">✓ Terminé</span>' in data
+    assert 'class="lesson-check done" role="img" aria-label="Terminé"' in data
+
+
+def test_playlist_row_separe_numero_et_titre(client) -> None:
+    media_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+
+    response = client.get(f"/watch/{media_id}")
+    data = response.data.decode()
+
+    assert '<span class="file-number">001</span>' in data
+    assert '<span class="file-title" title="001 - Interface">Interface</span>' in data
+
+
+def test_playlist_row_pas_terminee_coche_vide(client) -> None:
+    media_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+
+    response = client.get(f"/watch/{media_id}")
+    data = response.data.decode()
+
+    assert 'class="lesson-check " role="img" aria-label="Non terminé"></span>' in data
+
+
+def test_playlist_row_courante_affiche_position_et_barre(client) -> None:
+    media_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    set_duration(client, media_id, 688.0)
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "10"})
+
+    response = client.get(f"/watch/{media_id}")
+    data = response.data.decode()
+
+    assert f"0:10 / 11{NBSP}min{NBSP}28 · en cours" in data
+    playlist_start = data.index('id="playlist"')
+    first_row = data[playlist_start : data.index("</a>", playlist_start)]
+    assert 'class="file-position-track"' in first_row
+    assert "width: 1." in first_row  # 10/688*100 ~= 1.45%
+
+
+def test_playlist_row_non_courante_pas_de_texte_en_cours(client) -> None:
+    # Une vidéo avec une position réelle mais qui n'est pas celle
+    # ouverte dans le lecteur n'affiche que sa durée, comme une vidéo
+    # jamais commencée - seule la ligne courante montre "en cours".
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+    set_duration(client, first_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "10"})
+
+    response = client.get(f"/watch/{second_id}")
+    data = response.data.decode()
+
+    first_row_start = data.index('<span class="file-number">001</span>')
+    first_row = data[first_row_start : data.index("</a>", first_row_start)]
+    assert "en cours" not in first_row
 
 
 # --- Remise à zéro de la progression --------------------------------------
@@ -719,6 +882,59 @@ def test_hero_livre_sans_bouton_principal_menu_seul(client) -> None:
     assert '<div class="hero-actions">' not in data
 
 
+def test_hero_progress_absent_sans_progression(client) -> None:
+    # Jamais ouvert : ni barre ni texte, rien du tout - pas une barre
+    # à zéro.
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    data = client.get(f"/item/{item_id}").data.decode()
+
+    assert 'class="hero-progress"' not in data
+
+
+def test_hero_progress_absent_pour_livre(client) -> None:
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    data = client.get(f"/item/{item_id}").data.decode()
+
+    assert 'class="hero-progress"' not in data
+
+
+def test_hero_progress_formation_en_cours(client) -> None:
+    first_id = media_id_by_relative_path(client, "01 - Bases/001 - Interface.mp4")
+    second_id = media_id_by_relative_path(client, "01 - Bases/002 - Calques.mp4")
+    set_duration(client, first_id, 100.0)
+    set_duration(client, second_id, 100.0)
+    client.post(f"/media/{first_id}/progress", data={"position_seconds": "99"})
+
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    data = client.get(f"/item/{item_id}").data.decode()
+
+    hero_progress = data[
+        data.index('class="hero-progress"') : data.index(
+            '<div class="hero-actions">'
+        )
+    ]
+    assert 'class="card-progress"' in hero_progress
+    assert "width: 50%;" in hero_progress
+    assert f"50{NBSP}% · 1{NBSP}vidéo sur 2" in hero_progress
+
+
+def test_hero_progress_audiobook_termine(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_duration(client, media_id, 10800.0)
+    # Marge = min(10800*5%, 15) = 15s -> seuil a 10785s.
+    client.post(f"/media/{media_id}/progress", data={"position_seconds": "10800"})
+
+    item_id = item_id_by_title(client, "S organiser pour reussir (David Allen)")
+    data = client.get(f"/item/{item_id}").data.decode()
+
+    assert 'class="hero-progress"' in data
+    assert f"100{NBSP}% · 3{NBSP}h{NBSP}00 sur 3{NBSP}h{NBSP}00" in data
+
+
 def test_hero_menu_hors_de_la_rangee_actions(client) -> None:
     # Le menu ⋮ range les fonctions de maintenance, "Tout recommencer"
     # est une action de lecture : plus dans le même conteneur.
@@ -757,7 +973,10 @@ def test_dialog_tout_recommencer_formation_singulier_une_video(client) -> None:
     response = client.get(f"/item/{item_id}")
     data = response.data.decode()
 
-    assert "recommencer depuis le début ? 1\n            vidéo terminée sur\n            2." in data
+    assert (
+        f"recommencer depuis le début ? 1{NBSP}vidéo\n            terminée sur\n            2."
+        in data
+    )
     assert "La position des vidéos en cours sera aussi effacée." in data
 
 
@@ -775,7 +994,10 @@ def test_dialog_tout_recommencer_formation_pluriel_plusieurs_videos(client) -> N
     response = client.get(f"/item/{item_id}")
     data = response.data.decode()
 
-    assert "recommencer depuis le début ? 2\n            vidéos terminées sur\n            2." in data
+    assert (
+        f"recommencer depuis le début ? 2{NBSP}vidéos\n            terminées sur\n            2."
+        in data
+    )
     # Aucun média "en cours" (les deux sont terminés) : pas de phrase
     # supplémentaire, elle serait fausse ici.
     assert "sera aussi effacée" not in data
@@ -794,7 +1016,7 @@ def test_dialog_tout_recommencer_audiobook_annonce_la_position(client) -> None:
     assert "vidéo" not in data.split('id="dialog-reset-progress"')[1].split(
         "</dialog>"
     )[0]
-    assert "Position actuelle :\n            1 h 12." in data
+    assert f"Position actuelle :\n            1{NBSP}h{NBSP}12." in data
 
 
 def test_dialog_tout_recommencer_titre_en_gras_sans_guillemets(client) -> None:
@@ -1291,7 +1513,7 @@ def test_pas_de_controle_reset_par_media_dans_la_playlist(client) -> None:
     response = client.get(f"/watch/{media_id}")
     data = response.data.decode()
 
-    assert '<span class="file-state file-state-progress">En cours</span>' in data
+    assert "· en cours" in data
     assert "reset-progress" not in data
 
 
