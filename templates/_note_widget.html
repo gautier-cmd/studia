@@ -20,7 +20,9 @@
         <button type="button" class="toolbar-btn" data-md="h3" title="Titre 3">T3</button>
         <button type="button" class="toolbar-btn" data-md="list" title="Liste">Liste</button>
         <button type="button" class="toolbar-btn" data-md="code" title="Bloc de code">Code</button>
-        {% if player_context %}
+        {% if player_context and player_context.kind == 'book' %}
+        <button type="button" class="toolbar-btn" id="insert-marker" title="Insérer la page courante">Insérer la page</button>
+        {% elif player_context %}
         <button type="button" class="toolbar-btn" id="insert-marker" title="Insérer un repère">Repère</button>
         {% endif %}
         <button type="button" class="btn-mini" id="toggle-preview">Aperçu</button>
@@ -55,13 +57,13 @@
         return date.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'});
     }
 
-    // Un repère est une ligne "texte (/watch/id?t=secondes)" ou
-    // "texte (/listen/id?t=secondes)" selon le lecteur : le fragment
-    // entre parenthèses sert à repositionner le lecteur, ce n'est pas
-    // une information à montrer telle quelle (liste, aperçu,
-    // impression) — seule la zone de saisie, en texte brut, le laisse
-    // forcément visible.
-    var MARKER_PATTERN = /^(.*)\((\/(?:watch|listen)\/\d+\?t=\d+)\)\s*$/;
+    // Un repère est une ligne "texte (/watch/id?t=secondes)",
+    // "texte (/listen/id?t=secondes)" ou "texte (/read/id?p=page)"
+    // selon le lecteur : le fragment entre parenthèses sert à
+    // repositionner le lecteur, ce n'est pas une information à
+    // montrer telle quelle (liste, aperçu, impression) — seule la
+    // zone de saisie, en texte brut, le laisse forcément visible.
+    var MARKER_PATTERN = /^(.*)\((\/(?:watch|listen)\/\d+\?t=\d+|\/read\/\d+\?p=\d+)\)\s*$/;
 
     function markerLineRegex() {
         return new RegExp(MARKER_PATTERN.source, 'gm');
@@ -571,17 +573,33 @@
     }
 
     {% if player_context %}
-    document.getElementById('insert-marker').addEventListener('click', function () {
+    // Insertion proprement dite, partagée par tous les lecteurs : ce
+    // qui diffère selon le déclencheur, c'est le bouton qui l'appelle
+    // (ci-dessous), pas cette fonction.
+    function insertMarker() {
+        {% if player_context.kind == 'audio' %}
         var player = document.getElementById('player');
         var seconds = Math.floor(player.currentTime);
         var minutes = Math.floor(seconds / 60);
         var remaining = String(seconds % 60).padStart(2, '0');
         var timestamp = minutes + ':' + remaining;
-        {% if player_context.kind == 'audio' %}
         // Un audiobook n'a qu'un seul fichier : ni numéro de vidéo ni
         // titre à répéter, le repère se suffit de l'horodatage.
         var marker = timestamp + ' (/listen/{{ player_context.media_id }}?t=' + seconds + ')\n';
+        {% elif player_context.kind == 'book' %}
+        // Un livre n'a qu'un seul fichier, comme un audiobook : le
+        // repère se suffit du numéro de page. Cette page est celle
+        // affichée par le lecteur (reader-page-input, tenu à jour par
+        // updatePageFields) — currentPage vit dans le scope du module
+        // du lecteur, inaccessible d'ici.
+        var pageNumber = document.getElementById('reader-page-input').value;
+        var marker = 'Page ' + pageNumber + ' (/read/{{ player_context.media_id }}?p=' + pageNumber + ')\n';
         {% else %}
+        var player = document.getElementById('player');
+        var seconds = Math.floor(player.currentTime);
+        var minutes = Math.floor(seconds / 60);
+        var remaining = String(seconds % 60).padStart(2, '0');
+        var timestamp = minutes + ':' + remaining;
         // Lus sur le lecteur (data-media-id/number/title), jamais figés
         // dans ce script : le changement de vidéo sans rechargement
         // (tranche dédiée) les met à jour à chaque navigation, ce
@@ -597,7 +615,9 @@
 
         textarea.value = textarea.value.slice(0, position) + marker + textarea.value.slice(position);
         textarea.dispatchEvent(new Event('input'));
-    });
+    }
+
+    document.getElementById('insert-marker').addEventListener('click', insertMarker);
     {% endif %}
 })();
 </script>

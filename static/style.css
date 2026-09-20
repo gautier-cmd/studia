@@ -651,6 +651,48 @@ dialog.modal::backdrop {
     margin-bottom: var(--space-12);
 }
 
+/* Panneau de notes flottant du lecteur PDF : reprend le fond, la
+   bordure et le padding de .modal, mais non modal (affiché par
+   .show(), pas .showModal()) - le reste de la page reste utilisable
+   pendant qu'il est ouvert (défilement, changement de page, sélection
+   de texte dans le PDF). Position et taille pilotées en JS (déplaçable
+   par sa barre de titre, redimensionnable par le coin bas-droit natif
+   du navigateur via `resize`), donc le centrage par transform de
+   .modal ne s'applique pas ici. La carte de notes qu'il contient
+   (.note-card, aussi utilisée telle quelle sur la fiche et les
+   lecteurs vidéo/audio) perd son propre encadrement pour ne pas le
+   doubler avec celui du dialogue. */
+dialog.modal-note {
+    top: 0;
+    left: 0;
+    transform: none;
+    z-index: 30;
+    min-width: 320px;
+    min-height: 220px;
+    max-width: calc(100vw - var(--space-32));
+    max-height: calc(100vh - var(--space-32));
+    overflow: auto;
+    resize: both;
+}
+
+.modal-note .note-card {
+    background: none;
+    padding: 0;
+    margin-bottom: 0;
+}
+
+/* Barre de titre du panneau (.note-header, déjà là pour "Notes" et le
+   menu ⋮) sert aussi de poignée de déplacement : un curseur "move" sur
+   son fond suffit à le signaler, sans dupliquer de titre. Le clic sur
+   un bouton ou le résumé ⋮ qu'elle contient ne doit pas démarrer un
+   déplacement (voir book_reader.html) - seul son fond vide le
+   déclenche. */
+.modal-note .note-header {
+    cursor: move;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
 .btn-primary {
     background: var(--color-accent);
     color: var(--color-bg);
@@ -1837,6 +1879,7 @@ audio {
 }
 
 .reader-page {
+    position: relative;
     background: #fff;
     box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
     max-width: 100%;
@@ -1846,6 +1889,37 @@ audio {
     display: block;
     max-width: 100%;
     height: auto;
+}
+
+/* Couche de texte sélectionnable posée par PDF.js par-dessus le
+   canevas (voir renderTextLayerInto, book_reader.html) - texte
+   transparent, superposé pixel pour pixel au rendu visible. Règles
+   propres à la classe TextLayer de PDF.js, normalement fournies par le
+   CSS du lecteur officiel (viewer.css, volontairement pas vendu ici,
+   voir CLAUDE.md) : reprises ici pour ce que nécessite exactement
+   notre lecteur, pas le fichier complet. */
+.textLayer {
+    position: absolute;
+    inset: 0;
+    overflow: clip;
+    line-height: 1;
+    text-align: initial;
+    forced-color-adjust: none;
+    transform-origin: 0 0;
+    z-index: 1;
+}
+
+.textLayer span,
+.textLayer br {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+}
+
+.textLayer ::selection {
+    background: rgba(0, 100, 255, 0.3);
 }
 
 /* Tablette (720–1119px) : toujours côte à côte, mais le programme

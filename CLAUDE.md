@@ -190,16 +190,22 @@ par tri naturel (10 après 9).
     /listen/<media_id>      lecteur audio (M4B) : fichier unique, pas de
                             playlist ni de précédent/suivant
     /read/<media_id>        lecteur PDF : défilement continu ou page par
-                            page, zoom, reprise en pages
+                            page, zoom, reprise en pages, panneau de
+                            notes flottant ; ?p=<page> ouvre directement
+                            à cette page (repère, l'emporte sur la
+                            reprise, n'écrase pas la position tant que
+                            rien n'est relu depuis là)
     /media/<media_id>/file  sert le fichier vidéo, audio ou PDF (Range
                             HTTP géré par Flask, permet d'avancer/reculer)
 
     POST /media/<media_id>/progress   enregistre la position de lecture
                                        (position_seconds vidéo/audio, ou
                                        page_number pour un livre)
-    POST /preferences                 enregistre le mode de lecture et/ou
-                                       le zoom du lecteur PDF (réglages de
-                                       l'application, pas d'un livre)
+    POST /preferences                 enregistre le mode de lecture, le
+                                       zoom et/ou la position/taille du
+                                       panneau de notes du lecteur PDF
+                                       (réglages de l'application, pas
+                                       d'un livre)
 
     POST /item/<id>/book-search                        lance une recherche
     POST /item/<id>/book-candidate/<id>/accept          valide un candidat
@@ -1544,10 +1550,9 @@ la cohabitation des deux règles.
   ce repositionnement ne peut pas être interprété comme un changement
   de page à enregistrer - le mode défilement continu (`goToPage`,
   `renderScrollAround`, `suppressVisibilityBriefly`) n'est pas touché.
-- **Hors périmètre, explicitement, pour cette tranche.** Les notes et
-  les repères de page dans le lecteur PDF (aucun bloc notes dans
-  `book_reader.html`), le lecteur EPUB, la recherche dans le texte, le
-  sommaire interne du PDF.
+- **Hors périmètre, explicitement, pour cette tranche.** Le lecteur
+  EPUB, la recherche dans le texte, le sommaire interne du PDF. Les
+  notes et les repères de page ont leur propre tranche, voir plus bas.
 
 Vérifié à l'œil : le livre de test dans les deux modes, à zoom par
 défaut et agrandi, la reprise après fermeture, la fiche dans ses trois
@@ -1556,7 +1561,143 @@ consécutives en défilement continu (séparation visible) et
 l'enchaînement de deux pages en mode page par page à un zoom où la
 page dépasse l'écran (arrivée en haut de la nouvelle page).
 
-`pytest tests/` (237 tests) au vert.
+### Notes dans le lecteur PDF (fait)
+
+Transpose ce qui existe déjà dans `/watch` et `/listen` (voir "Bloc-
+notes", "Format des notes" et "Tranche 8 — notes" plus haut) au lecteur
+PDF, sans réinventer : même note, même composant, mêmes décisions déjà
+actées.
+
+- **Une seule note par livre, celle de l'item** (`fetch_note`/
+  `save_note`, identifiée par `library_path`) : rien de nouveau côté
+  modèle, pas de note par page, pas de table de repères séparée. Un
+  repère vise une page entière, jamais une position dans la page (un
+  décalage de position deviendrait faux au premier changement de
+  zoom).
+- **Panneau flottant, NON modal, déplaçable et redimensionnable**,
+  contrairement à `/watch`/`/listen` où la note est directement sous le
+  lecteur : la zone de lecture du PDF ne doit jamais rétrécir pour lui
+  faire de la place, et tout doit rester utilisable pendant qu'il est
+  ouvert - défilement, changement de page, zoom, et surtout sélection
+  de texte dans le PDF pour copier-coller vers la note (voir plus bas).
+  `<dialog class="modal modal-note">` affiché par `.show()` (jamais
+  `.showModal()`) : pas de `::backdrop`, pas d'inertie du reste de la
+  page. Conséquence assumée, decidée avec Gautier après un premier
+  essai en modal : **plus de piège de focus ni de fermeture au clic en
+  dehors** (un clic en dehors sert à lire) - seuls le bouton "Notes" de
+  la barre d'outils (qui ouvre et ferme, comme avant) et Échap
+  (déclenché globalement, pas seulement quand le panneau a le focus)
+  ferment le panneau.
+  Déplaçable par sa barre de titre : `.note-header` (le "Notes" + menu
+  "⋮" déjà là, réutilisé tel quel, jamais dupliqué) sert de poignée via
+  des évènements pointeur - un clic sur un bouton/le résumé "⋮" qu'elle
+  contient n'entame pas de déplacement. Redimensionnable par un coin :
+  poignée native du navigateur (`resize: both` en CSS), aucun code de
+  glisser-déposer réinventé pour ça. Jamais traînable/redimensionnable
+  hors d'atteinte : une position/taille est toujours clampée pour
+  laisser au moins 80px de la barre de titre visibles et cliquables sur
+  l'écran (haut jamais négatif, un peu de la largeur toujours visible à
+  gauche/droite) - vérifié aux deux extrêmes.
+  Position et taille mémorisées comme des réglages d'application (pas
+  par livre), dans la même table `preferences` que le mode/zoom -
+  schéma v7, quatre colonnes `REAL` nullables ajoutées
+  (`note_panel_left/top/width/height`), confirmées avec Gautier avant
+  écriture. Une valeur enregistrée sur un autre écran (ou une fenêtre
+  depuis redimensionnée) est ramenée dans l'écran actuel à l'ouverture
+  sans jamais écraser la valeur stockée pour autant - seul un vrai
+  déplacement/redimensionnement par l'utilisateur la réécrit
+  (`schedulePanelSave`, absent de la fonction qui ne fait que replacer
+  visuellement).
+  Le composant `_note_widget.html` (éditeur, aperçu, anti-rebond) est
+  repris tel quel à l'intérieur, sans aucune duplication : une
+  modification faite dans le panneau du lecteur se retrouve sur la
+  fiche et inversement, gratuitement, puisque c'est la même route et le
+  même enregistrement. Ouvrir/fermer/déplacer/redimensionner le panneau
+  ne touche à aucun état du lecteur (rendu, défilement, observateurs) :
+  la lecture et l'enregistrement de la position continuent sans être
+  perturbés.
+- **Bouton "Insérer la page" dans le panneau, à côté des outils
+  d'édition** (comme "Repère" pour vidéo/audio - jamais les deux à la
+  fois : `_note_widget.html` n'affiche que celui qui correspond au
+  lecteur). Vivait d'abord hors du panneau, dans la barre d'outils du
+  lecteur, le temps que le panneau était modal (la raison : voir la
+  page qu'on marque sans ouvrir le panneau) - cette raison disparaît
+  avec un panneau non modal et déplaçable, Gautier a donc demandé de le
+  ramener à sa place naturelle, à côté des outils d'édition, comme les
+  autres lecteurs.
+  Texte du repère, proposé et validé avant écriture : `Page 128
+  (/read/310?p=128)` - sobre comme celui de `/listen` (un livre n'a
+  qu'un seul fichier, rien à répéter contrairement à `/watch`).
+  Le motif qui reconnaît un repère dans la note (`MARKER_PATTERN`,
+  partagé lui aussi) a été étendu pour accepter `/read/id?p=page` en
+  plus de `/watch|listen/id?t=secondes` : liste des repères, rendu en
+  lien dans l'aperçu et à l'impression fonctionnent donc pour un livre
+  sans aucun changement supplémentaire. Un repère cliqué depuis la
+  fiche ouvre `/read/<media_id>?p=<page>`, qui affiche directement
+  cette page.
+- **`/read` accepte `?p=<page>`** et l'ouvre à cette page, en
+  l'emportant toujours sur la reprise automatique - même règle que
+  `?t=` sur `/watch`/`/listen`, y compris sur un livre déjà terminé.
+  Ouvrir via un repère ne doit pourtant pas écraser la position
+  enregistrée tant que rien n'a vraiment été relu depuis là : la page
+  ciblée (`opened_at_marker`, calculé côté serveur) est pré-enregistrée
+  côté client comme "déjà sauvegardée" (`lastSavedPage`) avant le tout
+  premier rendu, qui appelle `savePage()` comme n'importe quel
+  affichage de page mais ne l'écrit donc pas puisqu'elle égale déjà
+  cette valeur - seule une vraie navigation ultérieure vers une autre
+  page déclenche un envoi. C'est l'endroit où deux bugs de suivi de
+  visibilité ont déjà été trouvés (voir plus haut) : la protection se
+  fait ici en amont, avant même le tout premier rendu, plutôt qu'en
+  s'appuyant sur le mécanisme de suppression déjà en place (pensé pour
+  des reconstructions du DOM, pas pour ce cas).
+- **Couche de texte sélectionnable (PDF.js `TextLayer`)**, ajoutée pour
+  que le copier-coller vers la note fonctionne : le lecteur ne dessinait
+  jusque-là qu'un canevas (une image) par page, rien à sélectionner. Un
+  `<div class="textLayer">` (position absolue, `inset: 0`) est posé
+  par-dessus le canevas de chaque page, dans `.reader-page` (désormais
+  `position: relative` pour lui servir de repère). Construite page par
+  page, dans `renderPageInto` juste après le rendu du canevas - jamais
+  les 500+ pages d'un coup, même IntersectionObserver de préchargement
+  que le canevas (voir plus haut). `--total-scale-factor` (lu par
+  `TextLayer` pour positionner/dimensionner chaque span) est réglé sur
+  `pageViewport.scale`, la même échelle que le canevas : la couche
+  suit donc le zoom sans code séparé, puisqu'un changement de zoom
+  reconstruit déjà entièrement chaque page visible (canevas et
+  maintenant texte) via le même mécanisme existant. `--scale-round-x/y`
+  fixés à `1px` : normalement posés par le CSS du lecteur officiel de
+  PDF.js (`viewer.css`, volontairement pas vendu ici), fournis nous-
+  mêmes puisqu'on ne l'utilise pas. Un PDF sans texte (page scannée) ne
+  produit ni message ni erreur : aucune branche spéciale pour ce cas,
+  `page.streamTextContent()` renvoie simplement un flux vide et la
+  couche reste vide.
+  **Bug trouvé en écrivant cet ajout** : le mémo de rendu
+  (`entry.renderTask`, qui empêche un second rendu concurrent de la
+  même page) était relâché juste après le canevas, avant que la couche
+  de texte ne soit construite - une navigation vers cette page pendant
+  cette fenêtre aurait déclenché un second rendu en double. Corrigé en
+  ne relâchant le mémo qu'une fois les deux étapes terminées.
+  Vérifié : sélection alignée sur le texte visible à 100% et 170% de
+  zoom, après un changement de mode (page par page ↔ défilement),
+  copier-coller réel d'une phrase du PDF vers la note. Non vérifié en
+  conditions réelles dans cette session : la fluidité du défilement sur
+  un livre de 507 pages - l'environnement de test de ce projet fait
+  tourner l'onglet en arrière-plan (`document.hidden`), qui ralentit
+  déjà fortement le rendu du canevas lui-même (limitation connue,
+  documentée plus haut) au point de rendre un ressenti de fluidité non
+  significatif ; la construction page par page (jamais eager) reste la
+  garantie structurelle contre un ralentissement à l'ouverture d'un
+  gros livre.
+
+Vérifié à l'œil : panneau ouvert pendant qu'on fait défiler le PDF
+(rien ne se bloque), une sélection de texte dans le PDF collée dans la
+note, le panneau déplacé et redimensionné, sa position/taille
+retrouvées après rechargement (y compris ramenées à l'écran sans
+écraser la valeur enregistrée), Échap et le bouton "Notes" ferment le
+panneau, un clic en dehors ne le ferme plus, un repère inséré depuis le
+panneau, le même repère cliqué depuis la fiche ouvrant le lecteur à
+cette page, la note identique des deux côtés.
+
+`pytest tests/` (259 tests) au vert.
 
 ## Méthode — backlog
 

@@ -923,6 +923,17 @@ def test_migration_depuis_schema_v1(library: Path, db: Path) -> None:
     assert "media_chapters" in tables
     assert "preferences" in tables
 
+    colonnes_preferences = {
+        row[1]
+        for row in query(db, "PRAGMA table_info(preferences)")
+    }
+    assert {
+        "note_panel_left",
+        "note_panel_top",
+        "note_panel_width",
+        "note_panel_height",
+    } <= colonnes_preferences
+
     # Le media prealable garde son id 1, donc sa progression.
     assert query(
         db, "SELECT relative_path FROM media WHERE id = 1"

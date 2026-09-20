@@ -495,43 +495,97 @@ DEFAULT_READING_MODE = "scroll"
 
 
 def fetch_reading_preferences(conn) -> dict:
-    """Réglages du lecteur PDF (mode de défilement, niveau de zoom) -
-    un seul réglage pour toute l'application, jamais par livre (décidé
-    avec Gautier). Valeurs par défaut si aucune ligne n'existe encore
-    (avant le premier réglage explicite), pas d'erreur."""
+    """Réglages du lecteur PDF (mode de défilement, niveau de zoom,
+    position/taille du panneau de notes) - un seul réglage pour toute
+    l'application, jamais par livre (décidé avec Gautier). Valeurs par
+    défaut si aucune ligne n'existe encore (avant le premier réglage
+    explicite), pas d'erreur. Les quatre champs du panneau sont NULL
+    tant qu'il n'a jamais été déplacé/redimensionné : le JS calcule
+    alors une position/taille par défaut plutôt que de stocker cette
+    valeur calculée."""
 
     row = conn.execute(
-        "SELECT reading_mode, reading_zoom FROM preferences WHERE user_id = ?",
+        """
+        SELECT reading_mode, reading_zoom,
+               note_panel_left, note_panel_top,
+               note_panel_width, note_panel_height
+        FROM preferences WHERE user_id = ?
+        """,
         (LOCAL_USER_ID,),
     ).fetchone()
 
     if row is None:
-        return {"reading_mode": DEFAULT_READING_MODE, "reading_zoom": None}
+        return {
+            "reading_mode": DEFAULT_READING_MODE,
+            "reading_zoom": None,
+            "note_panel_left": None,
+            "note_panel_top": None,
+            "note_panel_width": None,
+            "note_panel_height": None,
+        }
 
-    return {"reading_mode": row["reading_mode"], "reading_zoom": row["reading_zoom"]}
+    return {
+        "reading_mode": row["reading_mode"],
+        "reading_zoom": row["reading_zoom"],
+        "note_panel_left": row["note_panel_left"],
+        "note_panel_top": row["note_panel_top"],
+        "note_panel_width": row["note_panel_width"],
+        "note_panel_height": row["note_panel_height"],
+    }
 
 
 def save_reading_preferences(
-    conn, reading_mode: str | None = None, reading_zoom: float | None = None
+    conn,
+    reading_mode: str | None = None,
+    reading_zoom: float | None = None,
+    note_panel_left: float | None = None,
+    note_panel_top: float | None = None,
+    note_panel_width: float | None = None,
+    note_panel_height: float | None = None,
 ) -> None:
-    """Met à jour un seul des deux réglages à la fois si l'appelant ne
-    fournit que celui-ci - la valeur non fournie garde celle déjà en
-    base plutôt que d'être effacée (un changement de zoom ne doit pas
-    réinitialiser le mode choisi, et inversement)."""
+    """Met à jour uniquement les réglages fournis par l'appelant - une
+    valeur non fournie garde celle déjà en base plutôt que d'être
+    effacée (un changement de zoom ne doit pas réinitialiser le mode
+    choisi, ni un déplacement du panneau de notes toucher au zoom, et
+    inversement)."""
 
     current = fetch_reading_preferences(conn)
     mode = reading_mode if reading_mode is not None else current["reading_mode"]
     zoom = reading_zoom if reading_zoom is not None else current["reading_zoom"]
+    panel_left = (
+        note_panel_left if note_panel_left is not None else current["note_panel_left"]
+    )
+    panel_top = (
+        note_panel_top if note_panel_top is not None else current["note_panel_top"]
+    )
+    panel_width = (
+        note_panel_width
+        if note_panel_width is not None
+        else current["note_panel_width"]
+    )
+    panel_height = (
+        note_panel_height
+        if note_panel_height is not None
+        else current["note_panel_height"]
+    )
 
     conn.execute(
         """
-        INSERT INTO preferences (user_id, reading_mode, reading_zoom)
-        VALUES (?, ?, ?)
+        INSERT INTO preferences (
+            user_id, reading_mode, reading_zoom,
+            note_panel_left, note_panel_top,
+            note_panel_width, note_panel_height
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             reading_mode = excluded.reading_mode,
-            reading_zoom = excluded.reading_zoom
+            reading_zoom = excluded.reading_zoom,
+            note_panel_left = excluded.note_panel_left,
+            note_panel_top = excluded.note_panel_top,
+            note_panel_width = excluded.note_panel_width,
+            note_panel_height = excluded.note_panel_height
         """,
-        (LOCAL_USER_ID, mode, zoom),
+        (LOCAL_USER_ID, mode, zoom, panel_left, panel_top, panel_width, panel_height),
     )
     conn.commit()
 
@@ -2148,9 +2202,6 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
 
     @app.route("/read/<int:media_id>")
     def read_book(media_id: int):
-        # Pas de note ni de repère de page dans cette tranche (voir
-        # CLAUDE.md) : contrairement à /watch et /listen, aucun bloc
-        # notes ici.
         conn = connect_database(app.config["DB_PATH"])
 
         try:
@@ -2161,13 +2212,26 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
 
             stored_progress = fetch_media_progress(conn, media_id)
             preferences = fetch_reading_preferences(conn)
+            note = fetch_note(conn, media["library_path"])
         finally:
             conn.close()
 
-        # Un livre terminé repart de la première page, comme un média
-        # temporel terminé repart du début (même fonction que
-        # resolve_resume_seconds, adaptée aux pages).
-        resume_page = resolve_resume_page(stored_progress)
+        # Un repère explicite (?p=, cliqué depuis la note) l'emporte
+        # toujours sur la reprise automatique, même sur un livre déjà
+        # terminé - même règle que ?t= sur /watch et /listen. La page
+        # d'ouverture initiale (opened_at_marker) n'est pas pour autant
+        # enregistrée telle quelle : la position enregistrée ne doit
+        # changer que si l'utilisateur lit vraiment depuis là (voir
+        # book_reader.html, lastSavedPage).
+        requested_page = request.args.get("p", type=int)
+        opened_at_marker = requested_page is not None
+        if opened_at_marker:
+            resume_page = requested_page
+        else:
+            # Un livre terminé repart de la première page, comme un
+            # média temporel terminé repart du début (même fonction que
+            # resolve_resume_seconds, adaptée aux pages).
+            resume_page = resolve_resume_page(stored_progress)
 
         filename = media["relative_path"].rsplit("/", 1)[-1]
         book_title = clean_file_title(filename)
@@ -2176,10 +2240,21 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             "book_reader.html",
             media=media,
             resume_page=resume_page,
+            opened_at_marker=opened_at_marker,
             reading_mode=preferences["reading_mode"],
             reading_zoom=preferences["reading_zoom"],
+            note_panel_left=preferences["note_panel_left"],
+            note_panel_top=preferences["note_panel_top"],
+            note_panel_width=preferences["note_panel_width"],
+            note_panel_height=preferences["note_panel_height"],
             reading_modes=READING_MODES,
             book_title=book_title,
+            note_text=note["text"] if note else "",
+            note_updated_at=note["updated_at"] if note else None,
+            player_context={
+                "kind": "book",
+                "media_id": media_id,
+            },
         )
 
     @app.route("/preferences", methods=["POST"])
@@ -2189,6 +2264,10 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         # ligne pour l'utilisateur local.
         reading_mode = request.form.get("reading_mode")
         reading_zoom = request.form.get("reading_zoom", type=float)
+        note_panel_left = request.form.get("note_panel_left", type=float)
+        note_panel_top = request.form.get("note_panel_top", type=float)
+        note_panel_width = request.form.get("note_panel_width", type=float)
+        note_panel_height = request.form.get("note_panel_height", type=float)
 
         if reading_mode is not None and reading_mode not in READING_MODES:
             abort(400)
@@ -2197,7 +2276,13 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
 
         try:
             save_reading_preferences(
-                conn, reading_mode=reading_mode, reading_zoom=reading_zoom
+                conn,
+                reading_mode=reading_mode,
+                reading_zoom=reading_zoom,
+                note_panel_left=note_panel_left,
+                note_panel_top=note_panel_top,
+                note_panel_width=note_panel_width,
+                note_panel_height=note_panel_height,
             )
         finally:
             conn.close()

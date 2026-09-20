@@ -2067,6 +2067,284 @@ def test_reset_progress_livre_relance_la_lecture(client) -> None:
     assert fetch_progress_row(client, media_id) is None
 
 
+# --- Notes et repères dans le lecteur PDF -------------------------------
+# La note d'un livre est celle de son item, la même que sur la fiche :
+# rien de nouveau côté modèle, le composant est repris tel quel
+# (_note_widget.html) - voir tests/test_notes.py pour le partage
+# fiche/lecteur en lui-même. Ici : ce qui est propre au lecteur PDF
+# (bouton Repère séparé du panneau, texte du repère, ouverture via ?p=).
+
+
+def test_lecteur_pdf_bouton_inserer_la_page_dans_le_panneau(client) -> None:
+    # Le bouton d'insertion vit désormais DANS le panneau de notes, à
+    # côté des outils d'édition (id="insert-marker", le même élément
+    # que pour vidéo/audio, réutilisé sans le dupliquer) - plus dans la
+    # barre d'outils du lecteur : la raison qui l'en sortait (voir la
+    # page qu'on marque sans ouvrir le panneau) disparaît avec un
+    # panneau non modal et déplaçable, qui n'empêche plus de lire
+    # pendant qu'il est ouvert.
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert 'id="insert-marker"' in data
+    assert 'id="reader-insert-marker"' not in data
+    assert data.count('id="insert-marker"') == 1  # jamais à deux endroits
+    assert "Insérer la page" in data
+    assert 'id="dialog-note"' in data
+
+
+def test_lecteur_pdf_repere_insere_depuis_le_panneau_fonctionne_de_bout_en_bout(
+    client,
+) -> None:
+    # Le bouton d'insertion a déménagé (barre d'outils du lecteur ->
+    # panneau de notes), mais ce qu'il produit passe par la même route
+    # de note que la fiche, inchangée par ce déménagement : un repère
+    # "inséré depuis le panneau" est simulé ici en écrivant directement
+    # le texte que insertMarker() produirait, pour vérifier que la
+    # chaîne complète fonctionne toujours - lien valide et identique
+    # des deux côtés, ouverture à la bonne page en le "cliquant" (une
+    # navigation vers son href).
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    marker_text = f"Page 128 (/read/{media_id}?p=128)\n"
+    response = client.post(f"/item/{item_id}/note", data={"text": marker_text})
+    assert response.status_code == 200
+
+    fiche = client.get(f"/item/{item_id}").data.decode()
+    reader_page = client.get(f"/read/{media_id}").data.decode()
+    assert f"(/read/{media_id}?p=128)" in fiche
+    assert f"(/read/{media_id}?p=128)" in reader_page
+
+    data = client.get(f"/read/{media_id}?p=128").data.decode()
+    assert "var resumePage = 128;" in data
+
+
+def test_lecteur_pdf_texte_du_repere_est_page_numero(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert (
+        f"var marker = 'Page ' + pageNumber + ' (/read/{media_id}?p=' + pageNumber + ')\\n';"
+        in data
+    )
+    # Un seul fichier, comme un audiobook : pas de numéro/titre à
+    # répéter (voir /watch, qui en a besoin pour une vidéo dans une
+    # playlist).
+    assert "'Vidéo " not in data
+
+
+def test_marker_pattern_reconnait_aussi_read(client) -> None:
+    # Même principe que test_marker_pattern_reconnait_watch_et_listen :
+    # le motif qui détecte un repère dans la note doit aussi accepter
+    # /read, pour qu'un repère de page soit reconnu par la liste des
+    # repères, l'aperçu et l'impression.
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert "\\/read\\/\\d+\\?p=\\d+" in data
+
+
+def test_route_read_accepte_p_et_ouvre_a_cette_page(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+    client.post(f"/media/{media_id}/progress", data={"page_number": "128"})
+
+    data = client.get(f"/read/{media_id}?p=42").data.decode()
+
+    assert "var resumePage = 42;" in data
+    assert "var openedAtMarker = true;" in data
+
+
+def test_route_read_page_explicite_l_emporte_meme_livre_termine(client) -> None:
+    # Même règle que ?t= sur /watch et /listen : un repère explicite
+    # l'emporte toujours sur la reprise automatique, même sur un livre
+    # déjà terminé (voir CLAUDE.md).
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+    client.post(f"/media/{media_id}/progress", data={"page_number": "305"})
+    assert fetch_progress_row(client, media_id)["completed"] == 1
+
+    data = client.get(f"/read/{media_id}?p=17").data.decode()
+
+    assert "var resumePage = 17;" in data
+
+
+def test_route_read_sans_p_nouvre_pas_via_un_repere(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert "var openedAtMarker = false;" in data
+
+
+def test_lecteur_pdf_repere_n_ecrase_pas_la_position_tant_que_pas_relu(client) -> None:
+    # La page ciblée par un repère est pré-enregistrée comme "déjà
+    # sauvegardée" (lastSavedPage) avant le tout premier rendu : celui-
+    # ci appelle savePage() comme n'importe quel affichage de page, qui
+    # ne l'écrit donc pas puisqu'elle égale déjà lastSavedPage - seule
+    # une vraie navigation ultérieure vers une autre page déclencherait
+    # un envoi. C'est l'endroit où deux bugs de suivi de visibilité ont
+    # déjà été trouvés (voir CLAUDE.md) : la protection se fait ici,
+    # avant même le premier rendu, pas en aval de lui.
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+    client.post(f"/media/{media_id}/progress", data={"page_number": "100"})
+
+    data = client.get(f"/read/{media_id}?p=42").data.decode()
+
+    assert "if (openedAtMarker) {" in data
+    assert "lastSavedPage = currentPage;" in data
+    # La position enregistrée avant l'ouverture n'a pas bougé : ouvrir
+    # la page ne l'a pas écrasée (aucune requête envoyée côté client
+    # dans ce cas, simulé ici par l'absence de tout appel à /progress).
+    assert fetch_progress_row(client, media_id)["page_number"] == 100
+
+
+def test_lecteur_pdf_panneau_notes_non_modal(client) -> None:
+    # Le panneau ne doit plus rendre le reste de la page inerte : ouvert
+    # par .show() (pas .showModal()), sans piège de focus ni fermeture
+    # au clic en dehors - un clic en dehors sert maintenant à lire (le
+    # PDF reste défilable, sa couche de texte PDF.js reste
+    # sélectionnable). Échap et le bouton "Notes" restent les deux
+    # façons de le fermer.
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert "notesDialog.show();" in data
+    assert "notesDialog.showModal()" not in data
+    assert "event.key === 'Escape' && notesDialog.open" in data
+    # Plus de piège de focus (Tab) ni de fermeture sur clic en dehors :
+    # aucune trace du mécanisme retiré (querySelectorAll des éléments
+    # focalisables, comparaison à event.target === notesDialog).
+    assert "notesDialog.querySelectorAll(" not in data
+    assert "event.target === notesDialog" not in data
+
+
+def test_lecteur_pdf_panneau_notes_deplacable_et_redimensionnable(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    # Déplaçable par sa barre de titre (.note-header, réutilisée telle
+    # quelle plutôt que dupliquée) via des évènements pointeur, en
+    # ignorant les boutons/le résumé ⋮ qu'elle contient - un clic
+    # dessus ne doit pas démarrer un déplacement.
+    assert "noteHeader.addEventListener('pointerdown'" in data
+    assert "event.target.closest('button, summary')" in data
+    # Redimensionnable par un coin : poignée native du navigateur
+    # (CSS resize, vérifié dans static/style.css), pas de code de
+    # glisser-déposer réinventé pour ça - seule la persistance de la
+    # nouvelle taille est câblée ici.
+    assert "new ResizeObserver(" in data
+    # Jamais traînable/redimensionnable hors d'atteinte.
+    assert "PANEL_MIN_VISIBLE" in data
+    assert "clampPanelPosition" in data
+
+
+def test_lecteur_pdf_panneau_notes_position_hors_ecran_pas_ecrasee(client) -> None:
+    # Une position/taille enregistrée sur un autre écran peut placer le
+    # panneau hors champ, ou trop grand pour la fenêtre actuelle : il
+    # doit être ramené visuellement dans l'écran à l'ouverture, sans
+    # que cette correction n'écrase la valeur enregistrée (un vrai
+    # déplacement/redimensionnement par l'utilisateur, lui, l'écrase -
+    # voir schedulePanelSave, absent de cette fonction).
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    keep_within_viewport = data.split(
+        "function keepPanelWithinViewport() {", 1
+    )[1].split("\n    }\n", 1)[0]
+    assert "schedulePanelSave" not in keep_within_viewport
+    assert "setPanelPosition" in keep_within_viewport
+
+
+# --- Sélection de texte dans le lecteur PDF -----------------------------
+# Le lecteur ne dessinait qu'un canevas (une image) par page : rien à
+# sélectionner ni à copier-coller vers la note. Ajout d'une couche de
+# texte PDF.js (TextLayer) par-dessus, construite page par page comme
+# le reste du rendu (même IntersectionObserver de préchargement que le
+# canevas - jamais les 500+ pages d'un coup).
+
+
+def test_lecteur_pdf_couche_de_texte_posee_par_page(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert 'className = \'textLayer\'' in data
+    assert "new pdfjsLib.TextLayer(" in data
+    assert "page.streamTextContent()" in data
+
+
+def test_lecteur_pdf_couche_de_texte_positionnee_a_l_echelle_du_zoom(client) -> None:
+    # --total-scale-factor (lu par TextLayer pour positionner/dimensionner
+    # chaque span) doit suivre la même échelle que le canevas
+    # (pageViewport.scale, donc fitScale * zoom) - sans quoi la
+    # sélection se décale du texte visible dès qu'on change de zoom.
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert "'--total-scale-factor', String(pageViewport.scale)" in data
+
+
+def test_lecteur_pdf_couche_de_texte_construite_apres_le_canevas_pas_avant(
+    client,
+) -> None:
+    # Le mémo de rendu (entry.renderTask) doit rester posé jusqu'à ce
+    # que la couche de texte soit elle aussi construite, pas seulement
+    # le canevas - sinon un second appel concurrent à renderPageInto
+    # (ex. pendant qu'on change de page) verrait le mémo déjà relâché
+    # et redéclencherait un rendu en double pendant que la couche de
+    # texte de la première passe se construit encore.
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    render_page_into = data.split("function renderPageInto(", 1)[1].split(
+        "\n    }\n", 1
+    )[0]
+    assert "renderTextLayerInto(page, pageViewport, entry)" in render_page_into
+    after_text_layer = render_page_into.split(
+        "renderTextLayerInto(page, pageViewport, entry);", 1
+    )[1]
+    assert "entry.renderTask = null;" in after_text_layer
+
+
+def test_lecteur_pdf_page_a_page_conteneur_positionne_pour_la_couche_de_texte(
+    client,
+) -> None:
+    # .textLayer est en position absolue (inset: 0) : elle doit se
+    # positionner par rapport à .reader-page, pas par rapport à un
+    # ancêtre plus large (le conteneur borné du lecteur, par exemple),
+    # sans quoi elle ne recouvrirait pas le canevas.
+    css_path = Path(__file__).resolve().parent.parent / "static" / "style.css"
+    css = css_path.read_text(encoding="utf-8")
+
+    reader_page_rule = css.split(".reader-page {", 1)[1].split("}", 1)[0]
+    assert "position: relative" in reader_page_rule
+
+    text_layer_rule = css.split(".textLayer {", 1)[1].split("}", 1)[0]
+    assert "position: absolute" in text_layer_rule
+
+
 # --- Préférences de lecture (mode, zoom) --------------------------------
 
 
@@ -2122,3 +2400,91 @@ def test_preferences_sont_globales_pas_par_livre(client) -> None:
 
     assert "var mode = \"paginated\";" in data
     assert "var zoom = 2.0;" in data
+
+
+def test_preferences_par_defaut_panneau_de_notes_sans_position(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert "var savedPanelLeft = null;" in data
+    assert "var savedPanelTop = null;" in data
+    assert "var savedPanelWidth = null;" in data
+    assert "var savedPanelHeight = null;" in data
+
+
+def test_enregistrement_position_et_taille_du_panneau_de_notes(client) -> None:
+    response = client.post(
+        "/preferences",
+        data={
+            "note_panel_left": "120.5",
+            "note_panel_top": "80",
+            "note_panel_width": "700",
+            "note_panel_height": "500",
+        },
+    )
+
+    assert response.status_code == 204
+    row = fetch_preferences(client)
+    assert row["note_panel_left"] == 120.5
+    assert row["note_panel_top"] == 80
+    assert row["note_panel_width"] == 700
+    assert row["note_panel_height"] == 500
+
+
+def test_panneau_de_notes_deplace_ne_touche_pas_au_mode_ni_au_zoom(client) -> None:
+    client.post("/preferences", data={"reading_mode": "paginated", "reading_zoom": "1.5"})
+    client.post(
+        "/preferences",
+        data={"note_panel_left": "200", "note_panel_top": "150"},
+    )
+
+    row = fetch_preferences(client)
+    assert row["reading_mode"] == "paginated"
+    assert row["reading_zoom"] == 1.5
+    assert row["note_panel_left"] == 200
+    assert row["note_panel_top"] == 150
+
+
+def test_mode_et_zoom_ne_touchent_pas_le_panneau_de_notes_deja_enregistre(client) -> None:
+    client.post(
+        "/preferences",
+        data={
+            "note_panel_left": "200",
+            "note_panel_top": "150",
+            "note_panel_width": "700",
+            "note_panel_height": "500",
+        },
+    )
+    client.post("/preferences", data={"reading_mode": "paginated"})
+
+    row = fetch_preferences(client)
+    assert row["note_panel_left"] == 200
+    assert row["note_panel_top"] == 150
+    assert row["note_panel_width"] == 700
+    assert row["note_panel_height"] == 500
+
+
+def test_panneau_de_notes_position_globale_pas_par_livre(client) -> None:
+    # Même règle que le mode/zoom : un seul réglage pour toute
+    # l'application (décidé avec Gautier), pas un mécanisme séparé -
+    # extension de la même table preferences.
+    client.post(
+        "/preferences",
+        data={
+            "note_panel_left": "42",
+            "note_panel_top": "24",
+            "note_panel_width": "600",
+            "note_panel_height": "450",
+        },
+    )
+
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+    set_page_count(client, media_id, 305)
+    data = client.get(f"/read/{media_id}").data.decode()
+
+    assert "var savedPanelLeft = 42.0;" in data
+    assert "var savedPanelTop = 24.0;" in data
+    assert "var savedPanelWidth = 600.0;" in data
+    assert "var savedPanelHeight = 450.0;" in data

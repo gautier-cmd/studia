@@ -112,6 +112,34 @@ def test_note_visible_aussi_sur_le_lecteur_video(client) -> None:
     assert "Insérer un repère" in player_page
 
 
+def test_note_visible_aussi_sur_le_lecteur_pdf(client) -> None:
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    client.post(f"/item/{item_id}/note", data={"text": "Note partagee"})
+
+    media_id = media_id_by_relative_path(
+        client, "920 - Adobe Illustrator CS6 - Adobe Press.pdf"
+    )
+    reader_page = client.get(f"/read/{media_id}").data.decode()
+
+    assert "Note partagee" in reader_page
+    # Bouton du panneau de notes du lecteur PDF, libellé différemment
+    # de "Repère" (vidéo/audio) - voir test_progress.py pour le détail.
+    assert "Insérer la page" in reader_page
+
+
+def test_note_modifiee_depuis_le_lecteur_pdf_se_retrouve_sur_la_fiche(client) -> None:
+    # La note est celle de l'item (même route /item/<id>/note, qu'on
+    # écrive depuis la fiche ou depuis le panneau du lecteur) : rien de
+    # nouveau à vérifier côté stockage, seulement que c'est bien le
+    # même texte des deux côtés.
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    client.post(f"/item/{item_id}/note", data={"text": "Ecrite depuis le lecteur"})
+
+    fiche = client.get(f"/item/{item_id}").data.decode()
+
+    assert "Ecrite depuis le lecteur" in fiche
+
+
 def test_note_absente_du_lecteur_sur_fiche_sans_note(client) -> None:
     item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
 

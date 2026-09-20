@@ -21,7 +21,7 @@ from offlineu_core import (
     SUBTITLE_EXTENSIONS,
 )
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 PROBE_TIMEOUT_SECONDS = 60
 PROBE_COMMIT_EVERY = 50
@@ -190,6 +190,10 @@ def create_schema(conn: sqlite3.Connection) -> None:
             user_id INTEGER PRIMARY KEY,
             reading_mode TEXT NOT NULL DEFAULT 'scroll',
             reading_zoom REAL,
+            note_panel_left REAL,
+            note_panel_top REAL,
+            note_panel_width REAL,
+            note_panel_height REAL,
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         );
         """
@@ -241,6 +245,12 @@ def migrate_schema(conn: sqlite3.Connection) -> list[str]:
         "resources": [
             ("parent_path", "TEXT NOT NULL DEFAULT ''"),
             ("sort_order", "INTEGER NOT NULL DEFAULT 0"),
+        ],
+        "preferences": [
+            ("note_panel_left", "REAL"),
+            ("note_panel_top", "REAL"),
+            ("note_panel_width", "REAL"),
+            ("note_panel_height", "REAL"),
         ],
     }
 
