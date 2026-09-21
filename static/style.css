@@ -808,6 +808,20 @@ body.page-player .modal-note .note-card {
     cursor: pointer;
 }
 
+/* Signale qu'une note existe déjà pour l'item, sur le bouton "Notes"
+   du hero - discret, jamais un chiffre ni un aperçu (aucune donnée
+   inventée au-delà de "une note existe"). Point plein, couleur
+   d'accent, aligné avec le texte du bouton. */
+.notes-indicator {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-accent);
+    margin-left: var(--space-8);
+    vertical-align: middle;
+}
+
 /* Tablette (720–1119px) : image et espacements réduits, toujours côte
    à côte (point 29 de la revue). */
 @media (max-width: 1119px) {
@@ -2263,6 +2277,16 @@ audio {
     font-family: inherit;
     font-size: var(--font-size-body);
     resize: vertical;
+}
+
+/* Barre au-dessus de l'aperçu en lecture seule de l'onglet "Notes"
+   (item_detail.html) : un seul bouton (imprimer), aligné à droite -
+   même icône/gabarit que dans le panneau flottant (.icon-btn), pas de
+   second bouton "menu ⋮" pour une seule action. */
+.note-preview-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: var(--space-8);
 }
 
 .note-preview {

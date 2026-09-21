@@ -227,6 +227,12 @@
         return html || '<p class="hint">Pas encore de note.</p>';
     }
 
+    // Exposé pour l'onglet "Notes" de la fiche d'item
+    // (item_detail.html), qui affiche la même note en lecture seule à
+    // côté du panneau flottant plutôt que de réimplémenter ce rendu -
+    // il n'y a jamais qu'une seule instance de render_note par page.
+    window.renderNoteMarkdown = renderMarkdown;
+
     function saveToLocal() {
         try {
             localStorage.setItem(storageKey, JSON.stringify({

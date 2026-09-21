@@ -1,5 +1,6 @@
 {% extends "_base.html" %}
-{% from "_note_widget.html" import render_note, render_print_block %}
+{% from "_note_widget.html" import render_print_block %}
+{% from "_note_panel.html" import render_note_panel_markup, render_note_panel_script %}
 {% from "_metadata_field.html" import metadata_field %}
 {% from "_type_icon.html" import type_icon %}
 {% from "_progress_bar.html" import progress_bar %}
@@ -88,14 +89,31 @@
             </div>
             {% endif %}
 
-            {% if first_playable_media_id %}
+            {% set has_note = note_text and note_text.strip() %}
+            {# La rangée d'actions existe toujours désormais, même sans
+               média lisible (livre non pris en charge) : le bouton
+               "Notes" doit rester atteignable dans tous les cas, c'est
+               le seul moyen d'écrire une première note - voir CLAUDE.md
+               "Notes sur la fiche d'item". #}
             <div class="hero-actions">
+                {% if first_playable_media_id %}
                 <a class="btn-primary" href="{{ url_for(watch_endpoint, media_id=first_playable_media_id) }}">▶ {{ watch_label }}</a>
                 {% if progress_status != 'not_started' %}
                 <button type="button" class="btn-secondary" data-open-dialog="dialog-reset-progress">Tout recommencer</button>
                 {% endif %}
+                {% endif %}
+                {# Ouvre le panneau de notes flottant partagé avec les
+                   quatre lecteurs (templates/_note_panel.html), jamais
+                   une variante : id="reader-toggle-notes" est ce que son
+                   script y cherche, seule la présentation du bouton
+                   change pour s'accorder aux boutons primaire/secondaire
+                   du hero plutôt qu'à une barre d'outils de lecteur. Le
+                   point discret n'invente aucune donnée (pas de compte,
+                   pas d'aperçu) : il dit seulement "une note existe". #}
+                <button type="button" class="btn-secondary" id="reader-toggle-notes" aria-expanded="false">
+                    Notes{% if has_note %}<span class="notes-indicator" aria-hidden="true"></span>{% endif %}
+                </button>
             </div>
-            {% endif %}
             {% if not first_playable_media_id and item['item_type'] == 'book' %}
             <p class="hint">Ce format ne peut pas encore être lu dans l'application.</p>
             {% endif %}
@@ -261,6 +279,9 @@
         <button type="button" class="tab active" data-tab-target="apropos" role="tab" aria-selected="true">À propos</button>
         <button type="button" class="tab" data-tab-target="programme" role="tab" aria-selected="false">Programme</button>
         <button type="button" class="tab" data-tab-target="ressources" role="tab" aria-selected="false">Ressources</button>
+        {% if has_note %}
+        <button type="button" class="tab" data-tab-target="notes" role="tab" aria-selected="false">Notes</button>
+        {% endif %}
     </div>
 
     <div class="tab-panel" data-panel="apropos">
@@ -342,7 +363,21 @@
         {% endif %}
     </div>
 
-    {{ render_note(item['id'], note_text, note_updated_at) }}
+    {% if has_note %}
+    {# Aperçu seul, jamais d'édition ici - l'écriture se fait dans le
+       panneau flottant (bouton "Notes" du hero). Même rendu Markdown
+       que le panneau (window.renderNoteMarkdown, exposé par
+       _note_widget.html) : les repères horodatés/de page/de chapitre y
+       restent cliquables, pas de seconde implémentation. #}
+    <div class="tab-panel hidden" data-panel="notes">
+        <div class="note-preview-toolbar">
+            <button type="button" class="icon-btn" id="notes-tab-print" title="Imprimer" aria-label="Imprimer">🖨</button>
+        </div>
+        <div id="notes-tab-preview" class="note-preview"></div>
+    </div>
+    {% endif %}
+
+    {{ render_note_panel_markup(item['id'], note_text, note_updated_at) }}
 </div>
 {% endblock %}
 
@@ -525,5 +560,27 @@
         toggle.textContent = expanded ? 'Réduire' : 'Lire la suite';
     });
 })();
+
+(function () {
+    // Aperçu en lecture seule de l'onglet "Notes" - même rendu que le
+    // panneau flottant (window.renderNoteMarkdown, exposé par
+    // _note_widget.html, dont le propre <script> est déjà exécuté à ce
+    // stade : le panneau vit plus haut dans le document). Rendu une
+    // fois à l'ouverture de la page depuis le texte enregistré ;
+    // l'édition se fait dans le panneau, pas ici.
+    var preview = document.getElementById('notes-tab-preview');
+    if (preview && typeof window.renderNoteMarkdown === 'function') {
+        preview.innerHTML = window.renderNoteMarkdown({{ note_text | tojson }});
+    }
+
+    var printBtn = document.getElementById('notes-tab-print');
+    if (printBtn) {
+        printBtn.addEventListener('click', function () {
+            window.print();
+        });
+    }
+})();
 </script>
+
+{{ render_note_panel_script(note_panel_left, note_panel_top, note_panel_width, note_panel_height) }}
 {% endblock %}

@@ -1904,6 +1904,9 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         conn = connect_database(app.config["DB_PATH"])
         try:
             note = fetch_note(conn, item["library_path"])
+            # Panneau de notes flottant, même réglage d'application que
+            # les quatre lecteurs (voir CLAUDE.md "Panneau de notes").
+            preferences = fetch_reading_preferences(conn)
         finally:
             conn.close()
 
@@ -1936,6 +1939,10 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             total_duration=total_duration,
             note_text=note["text"] if note else "",
             note_updated_at=note["updated_at"] if note else None,
+            note_panel_left=preferences["note_panel_left"],
+            note_panel_top=preferences["note_panel_top"],
+            note_panel_width=preferences["note_panel_width"],
+            note_panel_height=preferences["note_panel_height"],
             format_duration=format_duration,
             badge_label=badge_label,
             clean_file_title=clean_file_title,

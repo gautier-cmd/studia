@@ -973,17 +973,19 @@ def test_hero_livre_epub_recoit_son_bouton_principal(client) -> None:
 
 def test_hero_livre_non_pdf_non_epub_sans_bouton_principal_menu_seul(client) -> None:
     # Un format qu'aucun lecteur ne sait ouvrir (MOBI) : toujours pas
-    # de lecteur, le menu ⋮ reste la seule action du hero -
-    # comportement inchangé pour ce cas, contrairement au PDF et à
-    # l'EPUB ci-dessus.
+    # de lecteur ni de bouton principal, le menu ⋮ garde ses trois
+    # entrées inchangées - mais la rangée d'actions n'est plus vide
+    # pour autant depuis la tranche "Notes sur la fiche d'item" : le
+    # bouton "Notes" y reste, seul moyen d'écrire une première note
+    # même sur un livre illisible dans l'application.
     item_id = item_id_by_title(client, "Un livre MOBI (Auteur)")
     data = client.get(f"/item/{item_id}").data.decode()
 
     assert "ne peut pas encore être lu" in data
     assert 'class="hero-menu"' in data
-    # Pas de <div class="hero-actions"> vide : absente, pas juste sans
-    # enfant - aucun bouton principal à afficher pour ce livre.
-    assert '<div class="hero-actions">' not in data
+    assert '<div class="hero-actions">' in data
+    assert 'id="reader-toggle-notes"' in data
+    assert 'class="btn-primary"' not in data
 
 
 def test_hero_progress_absent_sans_progression(client) -> None:

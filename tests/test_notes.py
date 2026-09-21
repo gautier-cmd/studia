@@ -149,6 +149,109 @@ def test_note_absente_du_lecteur_sur_fiche_sans_note(client) -> None:
     assert "Insérer un repère" not in fiche  # pas de lecteur sur cette fiche
 
 
+# --------------------------------------------------------------------
+# Notes sur la fiche d'item : bouton du hero, panneau flottant partagé,
+# onglet "Notes" en aperçu seul - voir CLAUDE.md.
+# --------------------------------------------------------------------
+
+
+def test_bouton_notes_toujours_present_dans_le_hero(client) -> None:
+    # Seul moyen d'écrire une première note : présent même sans note
+    # existante, contrairement à l'ancien bloc tout en bas de la fiche.
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+
+    fiche = client.get(f"/item/{item_id}").data.decode()
+
+    assert '<div class="hero-actions">' in fiche
+    assert 'id="reader-toggle-notes"' in fiche
+    assert 'class="notes-indicator"' not in fiche
+
+
+def test_bouton_notes_ouvre_le_panneau_partage_pas_une_variante(client) -> None:
+    # Même gabarit que les quatre lecteurs (templates/_note_panel.html)
+    # : le <dialog> non modal, jamais une seconde implémentation.
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+
+    fiche = client.get(f"/item/{item_id}").data.decode()
+
+    assert 'id="dialog-note"' in fiche
+    assert "notesDialog.show();" in fiche
+    assert "notesDialog.showModal()" not in fiche
+    assert "resizeHandle.addEventListener('pointerdown'" in fiche
+
+
+def test_indicateur_notes_apparait_quand_une_note_existe(client) -> None:
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    client.post(f"/item/{item_id}/note", data={"text": "Une note"})
+
+    fiche = client.get(f"/item/{item_id}").data.decode()
+
+    assert 'class="notes-indicator"' in fiche
+
+
+def test_onglet_notes_absent_sans_note(client) -> None:
+    # Même règle que l'onglet Ressources : l'onglet Notes ne s'affiche
+    # que si la note n'est pas vide.
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+
+    fiche = client.get(f"/item/{item_id}").data.decode()
+
+    assert 'data-tab-target="notes"' not in fiche
+    assert 'data-panel="notes"' not in fiche
+
+
+def test_onglet_notes_present_avec_apercu_et_reperes_cliquables(client) -> None:
+    item_id = item_id_by_title(
+        client, "Motion Design - la formation complete (TUTO.com)"
+    )
+    media_id = media_id_by_relative_path(
+        client, "01 - Bases/001 - Interface.mp4"
+    )
+    marker = f"Vidéo 1 — Interface — 0:05 (/watch/{media_id}?t=5)\n"
+    client.post(f"/item/{item_id}/note", data={"text": marker + "Texte libre."})
+
+    fiche = client.get(f"/item/{item_id}").data.decode()
+
+    assert 'data-tab-target="notes"' in fiche
+    assert 'data-panel="notes"' in fiche
+    assert 'id="notes-tab-preview"' in fiche
+    # Aperçu seul, jamais d'édition dans l'onglet : pas de <textarea>
+    # dans son propre panneau (celle du panneau flottant reste la
+    # seule, ailleurs dans la page).
+    tab_panel = fiche[
+        fiche.index('data-panel="notes"') : fiche.index(
+            "</div>", fiche.index('id="notes-tab-preview"')
+        )
+    ]
+    assert "<textarea" not in tab_panel
+    # Rendu Markdown (window.renderNoteMarkdown, exposé par
+    # _note_widget.html) plutôt qu'une seconde implémentation, avec le
+    # repère toujours cliquable dans ce rendu.
+    assert "window.renderNoteMarkdown(" in fiche
+    assert f"/watch/{media_id}?t=5" in fiche
+
+
+def test_onglet_notes_a_son_propre_bouton_imprimer(client) -> None:
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    client.post(f"/item/{item_id}/note", data={"text": "Une note"})
+
+    fiche = client.get(f"/item/{item_id}").data.decode()
+
+    assert 'id="notes-tab-print"' in fiche
+
+
+def test_note_videe_fait_disparaitre_onglet_et_indicateur(client) -> None:
+    item_id = item_id_by_title(client, "Adobe Illustrator CS6 (Adobe Press)")
+    client.post(f"/item/{item_id}/note", data={"text": "Une note"})
+    assert 'class="notes-indicator"' in client.get(f"/item/{item_id}").data.decode()
+
+    client.post(f"/item/{item_id}/note", data={"text": ""})
+    fiche = client.get(f"/item/{item_id}").data.decode()
+
+    assert 'class="notes-indicator"' not in fiche
+    assert 'data-tab-target="notes"' not in fiche
+
+
 def test_note_survit_a_une_disparition_puis_retour_identique(
     client, library: Path, db: Path
 ) -> None:
