@@ -1,0 +1,266 @@
+{% from "_note_widget.html" import render_note %}
+
+{# Panneau de notes flottant, non modal, partagé par les quatre
+   lecteurs (vidéo, audio, PDF, EPUB) - un seul exemplaire de gabarit,
+   CSS (voir static/style.css, dialog.modal-note et
+   .note-panel-resize-handle) et JavaScript, plutôt que quatre copies
+   synchronisées à la main (décidé avec Gautier après que la copie du
+   lecteur audio a justement été oubliée lors d'une tranche
+   précédente). Trois macros, appelées séparément parce qu'elles ne
+   vivent pas dans la même partie de la page :
+   - render_notes_toggle() : le bouton "Notes" de la barre d'outils,
+     à poser dans le .reader-toolbar propre à chaque lecteur (contenu
+     du bloc "content").
+   - render_note_panel_markup(...) : le <dialog> lui-même, juste après
+     la zone de lecture (bloc "content").
+   - render_note_panel_script(...) : ouverture/fermeture/déplacement/
+     redimensionnement/mémorisation (bloc "scripts"). #}
+
+{% macro render_notes_toggle() %}
+<div class="reader-toolbar-group reader-notes" role="group" aria-label="Notes">
+    <button type="button" class="btn-mini" id="reader-toggle-notes" aria-expanded="false">Notes</button>
+</div>
+{% endmacro %}
+
+{% macro render_note_panel_markup(item_id, note_text, note_updated_at, player_context) %}
+<dialog class="modal modal-note" id="dialog-note" aria-label="Notes">
+    {{ render_note(item_id, note_text, note_updated_at, player_context=player_context, floating=True) }}
+    {# Poignée de redimensionnement dessinée à la main (static/style.css) :
+       cet élément EST la zone qui réagit au glissement (voir le script
+       ci-dessous) - plus de poignée native séparée, les deux ne
+       peuvent donc plus se désynchroniser. #}
+    <div class="note-panel-resize-handle" aria-hidden="true"></div>
+</dialog>
+{% endmacro %}
+
+{% macro render_note_panel_script(note_panel_left, note_panel_top, note_panel_width, note_panel_height) %}
+<script>
+(function () {
+    // --- Panneau de notes flottant, non modal ---------------------------
+    // Affiché par .show(), pas .showModal() : le reste de la page
+    // reste utilisable pendant qu'il est ouvert (défilement, lecture,
+    // sélection de texte à copier-coller dans la note pour les
+    // lecteurs PDF/EPUB). Conséquence assumée : pas de piège de focus,
+    // pas de fermeture au clic en dehors - seuls le bouton "Notes" et
+    // Échap ferment le panneau. Ouvrir/fermer/déplacer/redimensionner
+    // ne touche à aucun état du lecteur qui l'inclut.
+    var savedPanelLeft = {{ note_panel_left | tojson }};
+    var savedPanelTop = {{ note_panel_top | tojson }};
+    var savedPanelWidth = {{ note_panel_width | tojson }};
+    var savedPanelHeight = {{ note_panel_height | tojson }};
+
+    function savePreference(fields) {
+        var body = new URLSearchParams(fields);
+        fetch('/preferences', {method: 'POST', body: body});
+    }
+
+    var toggleNotesBtn = document.getElementById('reader-toggle-notes');
+    var notesDialog = document.getElementById('dialog-note');
+    var noteHeader = notesDialog.querySelector('.note-header');
+    var closeNotesBtn = document.getElementById('close-notes-panel');
+    var resizeHandle = notesDialog.querySelector('.note-panel-resize-handle');
+
+    function openNotesDialog() {
+        toggleNotesBtn.setAttribute('aria-expanded', 'true');
+        notesDialog.show();
+        if (panelGeometryInitialized) {
+            keepPanelWithinViewport();
+        } else {
+            applyInitialPanelGeometry();
+            panelGeometryInitialized = true;
+        }
+    }
+
+    function closeNotesDialog() {
+        // Annule un enregistrement de géométrie encore en attente : sans
+        // ça, son minuteur se déclencherait après la fermeture et
+        // mesurerait un rectangle dégénéré (0, 0, 0, 0), le dialogue
+        // fermé n'ayant plus de taille.
+        clearTimeout(panelSaveTimer);
+        var hadFocusInside = notesDialog.contains(document.activeElement);
+        notesDialog.close();
+        if (hadFocusInside) {
+            toggleNotesBtn.focus();
+        }
+    }
+
+    toggleNotesBtn.addEventListener('click', function () {
+        if (notesDialog.open) {
+            closeNotesDialog();
+        } else {
+            openNotesDialog();
+        }
+    });
+
+    closeNotesBtn.addEventListener('click', closeNotesDialog);
+
+    document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape' && notesDialog.open) {
+            closeNotesDialog();
+        }
+    });
+
+    // --- Position et taille : réglages de l'application, comme le mode
+    // et le zoom (une seule valeur pour tous les lecteurs) ---------------
+    var PANEL_DEFAULT_WIDTH = 640;
+    var PANEL_DEFAULT_HEIGHT = 480;
+    // Largeur/hauteur du panneau qui doit toujours rester visible et
+    // saisissable, même tiré au bord de l'écran.
+    var PANEL_MIN_VISIBLE = 80;
+
+    var panelGeometryInitialized = false;
+    var panelSaveTimer = null;
+
+    function schedulePanelSave() {
+        clearTimeout(panelSaveTimer);
+        panelSaveTimer = setTimeout(function () {
+            // Filet : un dialogue fermé (ou retiré de la page) mesure un
+            // rectangle nul - jamais une vraie géométrie à enregistrer.
+            // closeNotesDialog annule déjà ce minuteur, ce filet couvre
+            // le cas où il se déclenche quand même.
+            if (!notesDialog.open) {
+                return;
+            }
+            var rect = notesDialog.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) {
+                return;
+            }
+            savePreference({
+                note_panel_left: rect.left,
+                note_panel_top: rect.top,
+                note_panel_width: rect.width,
+                note_panel_height: rect.height
+            });
+        }, 900);
+    }
+
+    function clampPanelPosition(left, top, width, height) {
+        var maxLeft = window.innerWidth - PANEL_MIN_VISIBLE;
+        var minLeft = PANEL_MIN_VISIBLE - width;
+        var maxTop = window.innerHeight - PANEL_MIN_VISIBLE;
+        return {
+            left: Math.min(Math.max(left, minLeft), maxLeft),
+            top: Math.min(Math.max(top, 0), maxTop)
+        };
+    }
+
+    function setPanelPosition(left, top) {
+        var rect = notesDialog.getBoundingClientRect();
+        var clamped = clampPanelPosition(left, top, rect.width, rect.height);
+        notesDialog.style.left = clamped.left + 'px';
+        notesDialog.style.top = clamped.top + 'px';
+    }
+
+    // Position/taille enregistrées sur un autre écran (ou une fenêtre
+    // depuis redimensionnée) peuvent placer le panneau hors champ, ou
+    // le rendre plus grand que la fenêtre actuelle : on le ramène
+    // visuellement dans l'écran à l'ouverture, sans jamais réécrire la
+    // valeur enregistrée tant que ce n'est pas un vrai geste de
+    // l'utilisateur (déplacement/redimensionnement).
+    function keepPanelWithinViewport() {
+        var rect = notesDialog.getBoundingClientRect();
+        setPanelPosition(rect.left, rect.top);
+    }
+
+    function applyInitialPanelGeometry() {
+        var width = savedPanelWidth || PANEL_DEFAULT_WIDTH;
+        var height = savedPanelHeight || PANEL_DEFAULT_HEIGHT;
+        notesDialog.style.width = width + 'px';
+        notesDialog.style.height = height + 'px';
+
+        // Tient compte du plafond CSS (max-width/max-height) : la
+        // taille réellement obtenue peut être plus petite que celle
+        // demandée sur un petit écran.
+        var rect = notesDialog.getBoundingClientRect();
+        var left = savedPanelLeft;
+        var top = savedPanelTop;
+        if (left === null || top === null) {
+            left = (window.innerWidth - rect.width) / 2;
+            top = (window.innerHeight - rect.height) / 2;
+        }
+        setPanelPosition(left, top);
+    }
+
+    // Barre de titre (.note-header : "Notes" + bouton imprimante +
+    // croix de fermeture) comme poignée de déplacement - un clic sur
+    // un de ses boutons n'entame pas de déplacement.
+    var dragOffset = null;
+
+    noteHeader.addEventListener('pointerdown', function (event) {
+        if (event.target.closest('button, summary')) {
+            return;
+        }
+        var rect = notesDialog.getBoundingClientRect();
+        dragOffset = {x: event.clientX - rect.left, y: event.clientY - rect.top};
+        noteHeader.setPointerCapture(event.pointerId);
+        event.preventDefault();
+    });
+
+    noteHeader.addEventListener('pointermove', function (event) {
+        if (!dragOffset) {
+            return;
+        }
+        setPanelPosition(event.clientX - dragOffset.x, event.clientY - dragOffset.y);
+    });
+
+    function endPanelDrag() {
+        if (!dragOffset) {
+            return;
+        }
+        dragOffset = null;
+        schedulePanelSave();
+    }
+    noteHeader.addEventListener('pointerup', endPanelDrag);
+    noteHeader.addEventListener('pointercancel', endPanelDrag);
+
+    // Redimensionnement par le coin bas-droit, géré ici à la main plutôt
+    // que par la poignée native du navigateur (`resize: both`, retirée -
+    // voir static/style.css, dialog.modal-note). Raison du changement,
+    // trouvée par Gautier : la zone interactive de la poignée native
+    // reste toujours calée dans le vrai coin, quel que soit l'endroit où
+    // le motif dessiné dessus (.note-panel-resize-handle) est positionné
+    // - dès que ce motif est décalé pour rester visible sous le coin
+    // arrondi du panneau (voir plus bas dans style.css), on tire dans le
+    // vide entre le motif et le vrai coin. En dessinant et en gérant la
+    // poignée nous-mêmes, le motif EST la zone active : ils ne peuvent
+    // plus diverger. min-width/min-height/max-width/max-height (CSS, sur
+    // dialog.modal-note) continuent de borner la taille effective,
+    // exactement comme avec la poignée native - rien à recalculer ici.
+    var resizeStart = null;
+
+    resizeHandle.addEventListener('pointerdown', function (event) {
+        var rect = notesDialog.getBoundingClientRect();
+        resizeStart = {x: event.clientX, y: event.clientY, width: rect.width, height: rect.height};
+        resizeHandle.setPointerCapture(event.pointerId);
+        event.preventDefault();
+    });
+
+    resizeHandle.addEventListener('pointermove', function (event) {
+        if (!resizeStart) {
+            return;
+        }
+        notesDialog.style.width = (resizeStart.width + (event.clientX - resizeStart.x)) + 'px';
+        notesDialog.style.height = (resizeStart.height + (event.clientY - resizeStart.y)) + 'px';
+    });
+
+    function endResize() {
+        if (!resizeStart) {
+            return;
+        }
+        resizeStart = null;
+        schedulePanelSave();
+    }
+    resizeHandle.addEventListener('pointerup', endResize);
+    resizeHandle.addEventListener('pointercancel', endResize);
+
+    // Le panneau garde sa position/taille si la fenêtre change pendant
+    // qu'il est ouvert (même principe qu'à l'ouverture, sans jamais
+    // réécrire la valeur enregistrée pour autant).
+    window.addEventListener('resize', function () {
+        if (notesDialog.open) {
+            keepPanelWithinViewport();
+        }
+    });
+})();
+</script>
+{% endmacro %}

@@ -1,5 +1,6 @@
 {% extends "_base.html" %}
-{% from "_note_widget.html" import render_note, render_print_block %}
+{% from "_note_widget.html" import render_print_block %}
+{% from "_note_panel.html" import render_notes_toggle, render_note_panel_markup, render_note_panel_script %}
 
 {% block title %}{{ clean_file_title(media['relative_path'].rsplit('/', 1)[-1]) }} - Studia{% endblock %}
 
@@ -14,7 +15,20 @@
         <h1>{{ clean_file_title(media['relative_path'].rsplit('/', 1)[-1]) }}</h1>
         <audio id="player" controls autoplay src="{{ url_for('media_file', media_id=media['id']) }}"></audio>
 
-        {{ render_note(media['item_id'], note_text, note_updated_at, player_context=player_context) }}
+        {# Barre séparée des contrôles natifs du lecteur, sur le modèle
+           du lecteur vidéo (voir CLAUDE.md, "Panneau de notes flottant :
+           lecteur vidéo") : bouton "Notes" qui ouvre/ferme le panneau
+           flottant ci-dessous, à la place du bloc de notes fixe
+           d'avant. #}
+        <div class="reader-toolbar audio-notes-toolbar">
+            {{ render_notes_toggle() }}
+        </div>
+
+        {# Panneau flottant, repris tel quel des lecteurs vidéo/PDF/EPUB -
+           même composant, mêmes réglages de position/taille (voir
+           CLAUDE.md), aucune seconde implémentation. Le bloc de notes
+           fixe sous le lecteur disparaît au profit de ce panneau. #}
+        {{ render_note_panel_markup(media['item_id'], note_text, note_updated_at, player_context) }}
     </div>
 
     {% if chapters %}
@@ -113,6 +127,41 @@
 
         var rows = Array.prototype.slice.call(playlist.querySelectorAll('.file-row'));
 
+        // Position et hauteur de la colonne, alignées sur le lecteur -
+        // même règle que la playlist vidéo et la table des matières EPUB
+        // (voir CLAUDE.md, "Hauteur et position des colonnes latérales") :
+        // élément de page normal (plus de position: sticky), qui défile
+        // avec la page, sommet aligné sur celui du lecteur (margin-top),
+        // hauteur calculée pour s'arrêter ~20px avant le bas de la
+        // fenêtre quand la page est en haut.
+        var PLAYLIST_BOTTOM_MARGIN = 20;
+        var MOBILE_BREAKPOINT = 719;
+
+        function applyPlaylistBounds() {
+            if (window.innerWidth <= MOBILE_BREAKPOINT) {
+                // Palier smartphone : la colonne passe sous le lecteur,
+                // pleine largeur, entièrement géré par le media query CSS
+                // (voir style.css) - rien à calculer ici.
+                playlist.style.marginTop = '';
+                playlist.style.maxHeight = '';
+                return;
+            }
+            // Remis à 0 avant de mesurer : un ancien margin-top fausserait
+            // sinon la position lue juste après (elle inclurait déjà le
+            // décalage qu'on est en train de recalculer).
+            playlist.style.marginTop = '0px';
+            var playerDocTop = player.getBoundingClientRect().top + window.scrollY;
+            var playlistDocTop = playlist.getBoundingClientRect().top + window.scrollY;
+            var offset = Math.max(0, playerDocTop - playlistDocTop);
+            playlist.style.marginTop = offset + 'px';
+            var alignedDocTop = playlistDocTop + offset;
+            playlist.style.maxHeight =
+                Math.max(200, window.innerHeight - alignedDocTop - PLAYLIST_BOTTOM_MARGIN) + 'px';
+        }
+
+        applyPlaylistBounds();
+        window.addEventListener('resize', applyPlaylistBounds);
+
         // Positionnement initial, repris tel quel de video_player.html
         // (voir cette tranche) : #playlist démarre masqué (visibility:
         // hidden posé en dur dans le gabarit), la position finale est
@@ -171,4 +220,6 @@
     })();
 </script>
 {% endif %}
+
+{{ render_note_panel_script(note_panel_left, note_panel_top, note_panel_width, note_panel_height) }}
 {% endblock %}

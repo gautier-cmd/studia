@@ -672,13 +672,83 @@ dialog.modal-note {
     max-width: calc(100vw - var(--space-32));
     max-height: calc(100vh - var(--space-32));
     overflow: auto;
-    resize: both;
+    /* Plus de poignée native (`resize: both`) : bug trouvé par
+       Gautier, sa zone interactive reste toujours calée dans le vrai
+       coin du panneau, quel que soit l'endroit où le motif dessiné
+       dessus (::after, avant cette correction) était positionné - dès
+       que ce motif était décalé pour rester visible sous le coin
+       arrondi (border-radius: 16px, voir l'historique de ce
+       commentaire dans CLAUDE.md), on tirait dans le vide entre le
+       motif et la vraie zone active. Redimensionnement géré à la main
+       à la place (.note-panel-resize-handle ci-dessous + JS,
+       templates/_note_panel.html) : le motif dessiné EST la zone
+       active, un seul élément, ils ne peuvent plus diverger. */
+    resize: none;
+}
+
+/* Poignée de redimensionnement, dessinée ET active (pointeur) - même
+   motif décoratif qu'avant (trois traits diagonaux), mais plus un
+   ::after décoratif seul : cet élément reçoit lui-même les évènements
+   pointer (templates/_note_panel.html). Rentrée de 6px du coin,
+   jamais 15px comme le ::after précédent (ça la ferait flotter loin
+   du coin, plus perçue comme une poignée de coin) : calcul du minimum
+   sûr pour rester entièrement dans la partie du panneau réellement
+   peinte, jamais dans la zone que le coin arrondi (border-radius:
+   16px = --radius-lg) découpe - à cet endroit, cette zone montre ce
+   qu'il y a DERRIÈRE le panneau (la page de lecture, claire), jamais
+   son propre fond (bug d'origine, trouvé par Gautier avec un motif
+   posé à 2px). Le point de la poignée le plus proche du vrai coin
+   (à N px de chaque bord) doit rester à une distance du centre de
+   l'arrondi (à 16px de chaque bord) inférieure ou égale au rayon :
+   N ≥ 16 × (1 − 1/√2) ≈ 4,69px - 6px (dans la fourchette 4-6px
+   demandée) donne une marge confortable (~1,9px) plutôt que de coller
+   à cette limite théorique. */
+.note-panel-resize-handle {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    width: 14px;
+    height: 14px;
+    cursor: nwse-resize;
+    background-image: repeating-linear-gradient(
+        135deg,
+        var(--color-text-secondary) 0,
+        var(--color-text-secondary) 1.5px,
+        transparent 1.5px,
+        transparent 4px
+    );
+    clip-path: polygon(100% 0, 100% 100%, 0 100%);
+    opacity: 0.7;
+}
+
+dialog.modal-note:hover .note-panel-resize-handle {
+    opacity: 1;
 }
 
 .modal-note .note-card {
     background: none;
     padding: 0;
     margin-bottom: 0;
+    /* Contient la marge négative de .note-header (voir plus bas) : sans
+       ça, une marge haute négative sur le premier enfant d'une boîte
+       sans padding/bordure "remonte" par fusion de marges (margin
+       collapsing) au lieu de le décaler lui. flow-root établit un
+       contexte de mise en forme dédié, sans rien changer d'autre
+       (contrairement à overflow: hidden, qui découperait aussi ce qui
+       dépasse). */
+    display: flow-root;
+}
+
+/* `body.page-player .card { margin-top: var(--space-20); }` (plus bas)
+   espace la carte de notes du lecteur vidéo/audio quand elle est un
+   élément de page normal - pas de raison de vouloir ça sur le panneau
+   flottant, positionné en absolu, et ça faussait le calcul de la zone
+   de glissement de .note-header (20px de trop, jamais vus dans les
+   mesures - trouvé en vérifiant à l'écran). Sélecteur aussi qualifié
+   que la règle à annuler (même préfixe body.page-player), sinon elle
+   perd face à elle par spécificité malgré l'ordre dans le fichier. */
+body.page-player .modal-note .note-card {
+    margin-top: 0;
 }
 
 /* Barre de titre du panneau (.note-header, déjà là pour "Notes" et le
@@ -686,11 +756,25 @@ dialog.modal-note {
    son fond suffit à le signaler, sans dupliquer de titre. Le clic sur
    un bouton ou le résumé ⋮ qu'elle contient ne doit pas démarrer un
    déplacement (voir book_reader.html) - seul son fond vide le
-   déclenche. */
+   déclenche.
+   Bug trouvé par Gautier : la zone de glissement se limitait à la
+   ligne du titre elle-même, laissant une bande morte (le padding du
+   dialogue, 20px) au-dessus - la poignée doit couvrir toute la surface
+   entre le bord haut du panneau et le début de la barre d'outils
+   d'édition. Corrigé en étendant la boîte de .note-header par une
+   marge négative (elle mange le padding du dialogue sur le haut et les
+   côtés, jusqu'au bord réel du panneau) puis en redonnant cet espace
+   en padding - le texte et les icônes restent au même endroit à
+   l'écran, mais toute la zone est maintenant dans la boîte de
+   .note-header, donc glissable (le clic sur ⋮/× reste exclu par le JS,
+   inchangé). Le fond du dialogue (--color-surface) couvre déjà cette
+   zone, rien à ajouter visuellement. */
 .modal-note .note-header {
     cursor: move;
     -webkit-user-select: none;
     user-select: none;
+    margin: calc(-1 * var(--space-20)) calc(-1 * var(--space-20)) 0;
+    padding: var(--space-20) var(--space-20) var(--space-12);
 }
 
 .btn-primary {
@@ -1598,19 +1682,22 @@ audio {
     flex-shrink: 0;
     background: var(--color-surface);
     border-radius: var(--radius-lg);
-    /* Ancrée en haut de la fenêtre visible, jamais plus haute qu'elle
-       (calc(100vh - ...), le même espace que le padding de .layout en
-       haut et en bas) : sur une formation longue, .main (vidéo +
-       boutons + notes) dépasse largement l'écran, la liste ne doit
-       pas le suivre - elle reste affichée et défile en interne
-       pendant qu'on fait défiler la page pour lire les notes.
-       Remplace un ResizeObserver (tranche 6) qui recopiait la hauteur
-       de .main sur .playlist : correct tant que .main tenait dans
-       l'écran, mais une valeur purement CSS n'a plus ce problème et
-       suit le redimensionnement de la fenêtre sans JS. */
-    position: sticky;
-    top: var(--space-20);
-    max-height: calc(100vh - var(--space-40));
+    /* Ni position ni hauteur fixées ici (décidé avec Gautier - voir
+       "Hauteur et position des colonnes latérales" dans CLAUDE.md) :
+       un ancrage collant (position: sticky) gardait la colonne visible
+       à l'écran même quand on descend vers les notes, alors que son
+       haut doit au contraire sortir de l'écran exactement comme celui
+       de la vidéo - la colonne est un élément de page normal, elle
+       défile AVEC elle. margin-top (pour aligner son sommet sur celui
+       de la vidéo/du cadre de lecture, plus haut que le sien par
+       défaut - il n'a pas de fil d'Ariane ni de titre au-dessus) et
+       max-height (pour qu'elle s'arrête ~20px avant le bas de la
+       fenêtre quand la page est en haut) sont calculés en JS - une
+       valeur purement CSS ne peut pas connaître la hauteur du
+       fil d'Ariane/titre au-dessus de la vidéo, qui varie avec le
+       texte. overflow-y: auto reste nécessaire : la colonne défile en
+       interne pour ses propres 258 vidéos ou 88 chapitres, sans
+       jamais dépasser la hauteur qui lui est allouée. */
     overflow-y: auto;
 }
 
@@ -1815,6 +1902,24 @@ audio {
     display: flex;
     align-items: center;
     gap: var(--space-8);
+}
+
+/* Bouton "Notes" du lecteur vidéo, dans sa propre barre (jamais dans
+   .nav-buttons - voir video_player.html) : reprend .reader-toolbar/
+   .reader-toolbar-group des lecteurs PDF/EPUB, un seul groupe ici
+   plutôt que plusieurs - aligné à droite comme leur propre groupe
+   "Notes", au lieu de coller à gauche par défaut (justify-content:
+   space-between de .reader-toolbar, avec un seul enfant). Après
+   .reader-toolbar-group dans le fichier : même spécificité qu'une
+   seule classe sur .reader-toolbar, l'ordre déciderait sinon en sa
+   faveur. */
+/* Même bouton "Notes", même barre à un seul groupe, sur le lecteur
+   audio (audio_player.html) - reprend la même règle que celle du
+   lecteur vidéo ci-dessus plutôt que de la dupliquer sous un autre
+   nom. */
+.video-notes-toolbar,
+.audio-notes-toolbar {
+    justify-content: flex-end;
 }
 
 .reader-toolbar .btn-mini[aria-pressed="true"] {
@@ -2064,6 +2169,42 @@ audio {
 
 .note-header h3 {
     margin-bottom: 0;
+}
+
+/* Regroupe le menu ⋮ et, dans le panneau flottant seulement, la croix
+   de fermeture - voir _note_widget.html (floating) et "Panneau de
+   notes" dans CLAUDE.md. */
+.note-header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+}
+
+/* Bouton icône seul (imprimer) dans l'en-tête du panneau de notes -
+   remplace un menu ⋮ à une seule entrée (décidé avec Gautier :
+   `.hero-menu` reste utilisée telle quelle ailleurs pour un vrai menu à
+   plusieurs entrées, voir le hero de la fiche). Même gabarit visuel que
+   ce menu avait (36px, couleur de texte secondaire, fond au survol),
+   repris ici sous un nom générique et réutilisable plutôt que de
+   réutiliser `.hero-menu` pour un bouton qui n'en est plus un. */
+.icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: var(--radius-md);
+    background: none;
+    color: var(--color-text-secondary);
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.icon-btn:hover {
+    background: var(--color-surface-2);
+    color: var(--color-text);
 }
 
 .note-format-toolbar {

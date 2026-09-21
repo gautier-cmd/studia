@@ -1244,6 +1244,59 @@ toujours de `compute_item_progress_percent` via `fetch_item_media_progress`.
 
 `pytest tests/` (187 tests) au vert.
 
+### Hauteur et position des colonnes latérales (fait)
+
+**`position: sticky` (ci-dessus) était le mauvais mécanisme**, trouvé
+par Gautier sur Motion Design (258 vidéos, 27 chapitres) et sur "La
+boîte à outils" (88 chapitres, table des matières EPUB - même colonne,
+même bug). Un ancrage collant garde la colonne visible à l'écran
+pendant qu'on fait défiler la page - or c'est l'inverse qui est voulu :
+en descendant vers les notes, le haut de la colonne doit sortir de
+l'écran exactement comme le haut de la vidéo/du cadre de lecture, elle
+n'a pas vocation à rester affichée plus longtemps qu'eux. Second défaut
+constaté séparément : la colonne démarre au niveau du fil d'Ariane (le
+haut de `.layout`), pas au niveau de la vidéo/du cadre - `.main` a un
+fil d'Ariane et un titre au-dessus de son contenu, pas la colonne.
+
+Règle commune à la playlist vidéo (`.playlist`, `video_player.html`) et
+à la table des matières EPUB (`#playlist`, `epub_reader.html`) -
+strictement la même dans les deux templates :
+- **Position** : la colonne est un élément de page normal (plus de
+  `position: sticky` ni de `top`), qui défile avec la page comme
+  n'importe quel autre élément - jamais collée à l'écran.
+- **Alignement du sommet** sur celui de la vidéo/du cadre de lecture,
+  via un `margin-top` calculé en JS (`videoDocTop - playlistDocTop`,
+  mesurés en coordonnées de document - `rect.top + window.scrollY` -
+  pour rester valables quelle que soit la position de défilement au
+  moment du calcul) : une valeur purement CSS ne peut pas connaître la
+  hauteur du fil d'Ariane/titre au-dessus, qui varie avec le texte.
+- **Hauteur** calculée pour que le bas de la colonne arrive
+  `PLAYLIST_BOTTOM_MARGIN` (20px) avant le bas de la fenêtre visible
+  **quand la page est en haut** - jamais la hauteur du contenu ni celle
+  de la colonne de gauche. Calculée une fois au chargement (et sur
+  `resize` de la fenêtre), jamais en fonction du défilement courant :
+  recalculer pendant qu'on défile donnerait une hauteur qui rétrécit à
+  mesure qu'on descend, ce qui n'est pas ce qui est demandé.
+- `overflow-y: auto` inchangé : la colonne continue de défiler en
+  interne pour ses propres 258 vidéos ou 88 chapitres, sans jamais
+  dépasser la hauteur qui lui est allouée - un défilement de page (la
+  colonne qui défile avec `.main`) et un défilement interne (sa propre
+  liste, plus longue que la hauteur allouée) sont deux choses
+  différentes qui cohabitent normalement ; le double défilement à
+  éviter était celui, différent, de l'iframe EPUB dans
+  `#reader-viewport` (voir "Lecteur EPUB").
+
+Palier smartphone (`<720px`, colonne sous la vidéo/le lecteur, pleine
+largeur) non concerné : sa propre règle CSS (`position: static;
+max-height: 40vh`) reste inchangée, le calcul JS se désactive lui-même
+sous ce seuil.
+
+Vérifié dans le navigateur, page en haut puis défilée jusqu'aux notes,
+sans double barre de défilement imbriquée : Motion Design (258 vidéos,
+27 chapitres) et "La boîte à outils" (88 chapitres).
+
+`pytest tests/` (187 tests) au vert.
+
 ### Changement de vidéo sans rechargement (fait)
 
 Précédent, Suivant, clic sur une ligne de la playlist et enchaînement
@@ -1800,6 +1853,202 @@ cette page, la note identique des deux côtés.
 
 `pytest tests/` (259 tests) au vert.
 
+- **Bug trouvé par Gautier, bien après coup : le panneau semblait ne
+  plus être ni déplaçable ni redimensionnable, dans les deux lecteurs.**
+  Le code de glisser-déposer et de redimensionnement était en réalité
+  correct - le vrai problème se trouvait dans l'enregistrement de sa
+  géométrie. `schedulePanelSave` attend 900 ms (anti-rebond) avant de
+  lire `getBoundingClientRect()` sur le dialogue ; si le panneau est
+  fermé pendant ce délai (glisser puis fermer tout de suite, un geste
+  naturel), le `<dialog>` est déjà caché quand le minuteur se
+  déclenche - un élément caché renvoie un rectangle (0, 0, 0, 0), écrit
+  tel quel dans `preferences`. Confirmé en base sur la bibliothèque de
+  test (colonnes à 0 au lieu de `NULL`). Au réglage suivant : `width`/
+  `height` utilisaient `valeur || défaut` (`0` étant "faux" en
+  JavaScript, la corruption y était masquée), mais `left`/`top`
+  utilisaient `valeur === null` (`0` n'est pas `null`, la corruption y
+  passait telle quelle) - le panneau se retrouvait donc épinglé dans le
+  coin supérieur gauche, superposé à la sidebar, à chaque ouverture
+  suivante : moins "cassé" qu'il n'y paraissait, mais bloqué au même
+  endroit indéfiniment.
+  Corrigé à deux niveaux : côté client, `schedulePanelSave` (et son
+  homologue EPUB) n'enregistre plus rien si le dialogue est fermé ou si
+  le rectangle mesuré a une largeur/hauteur nulle ou négative, et
+  `closeNotesDialog` annule le minuteur en attente plutôt que de le
+  laisser se déclencher après coup. Côté serveur, en défense en
+  profondeur (le client ne doit jamais être le seul rempart) : la route
+  `/preferences` ignore les quatre champs de géométrie ensemble dès que
+  la largeur ou la hauteur envoyée est inférieure ou égale à zéro,
+  plutôt que d'écraser une géométrie valable par une dégénérée. Couvert
+  par un test qui reproduit exactement le scénario (rectangle nul après
+  une géométrie valable, puis sans aucune géométrie préalable) : la
+  valeur précédente doit survivre, jamais être remplacée par du zéro.
+- **Croix de fermeture explicite**, à côté du menu ⋮ dans l'en-tête du
+  panneau (`_note_widget.html`, nouveau paramètre `floating` du macro
+  `render_note` - seul le panneau flottant des lecteurs PDF/EPUB
+  l'affiche, jamais la carte de notes de la fiche ou de `/watch`/
+  `/listen`). Échap continue de fonctionner ; la croix est la première
+  issue visible à la souris, sans devoir connaître le raccourci ni
+  rouvrir le bouton "Notes" de la barre d'outils.
+  **Bug trouvé par Gautier en vérifiant cet ajout : la croix se
+  retrouvait sous le ⋮ plutôt qu'à côté, et seule une mince bande sous
+  le ⋮ permettait de glisser le panneau.** `.hero-menu` (le ⋮) est
+  conçu pour flotter en haut à droite du hero de la fiche
+  (`position: absolute`) - une fois réutilisé tel quel dans
+  `.note-header`, il échappait complètement au flux normal, ne
+  laissant que le texte "Notes" et la croix (les seuls éléments
+  encore en flux) définir la hauteur de l'en-tête - d'où la bande
+  fine. Corrigé en repassant `.hero-menu` en `position: relative`
+  (jamais `static` : il reste le repère de positionnement de son
+  propre menu déroulant) à l'intérieur de `.note-header` seulement -
+  il revient dans le flux, à côté de la croix, et l'en-tête retrouve
+  sa vraie hauteur (celle du bouton ⋮, 36px) sur toute sa largeur.
+  **Zone de glissement encore trop petite, signalé par Gautier une fois
+  cette correction en place** : limitée à la hauteur de l'en-tête, alors
+  que le dialogue a son propre padding (20px, hérité de `.modal`)
+  au-dessus - une bande morte sur toute la largeur du panneau, entre son
+  bord haut réel et le début de l'en-tête. Corrigé en étirant la boîte
+  de `.note-header` par une marge négative égale à ce padding (haut et
+  côtés), lui redonnée en padding propre - le texte et les icônes
+  restent au même endroit à l'écran, mais toute la surface entre le
+  bord haut du panneau et le début de la barre d'outils d'édition fait
+  maintenant partie de la même boîte, donc de la même poignée de
+  glissement (le clic sur ⋮/× reste exclu, inchangé).
+  **Deux pièges trouvés en vérifiant cette correction à l'écran, la
+  marge négative ne bougeait rien du tout au premier essai.** D'abord,
+  une marge négative en haut d'un premier enfant "remonte" par fusion
+  de marges (margin collapsing) dans son parent (`.note-card`) au lieu
+  de déplacer l'enfant lui-même, tant que ce parent n'a ni padding ni
+  bordure sur ce côté - `.modal-note .note-card { display: flow-root }`
+  lui donne le contexte de mise en forme qui arrête cette fusion.
+  Ensuite, une règle plus ancienne et plus générale,
+  `body.page-player .card { margin-top: 20px }` (pensée pour espacer la
+  carte de notes de la vidéo/du PDF quand elle est un élément de page
+  normal, sur `/watch`/`/listen`/`/read`), s'appliquait aussi au
+  panneau flottant et ajoutait 20px de plus, jamais vus dans les
+  mesures de `.note-header` puisqu'ils venaient de `.note-card`, son
+  parent. Annulée par une règle aussi qualifiée qu'elle
+  (`body.page-player .modal-note .note-card { margin-top: 0 }`) : une
+  règle moins qualifiée aurait perdu face à elle par spécificité, quel
+  que soit l'ordre des deux dans le fichier.
+- **Menu ⋮ retiré du panneau de notes**, une seule entrée ("Imprimer")
+  ne justifiait pas un menu à ouvrir - remplacé par un bouton unique
+  (icône imprimante 🖨, infobulle "Imprimer"). Vérifié avant de
+  supprimer quoi que ce soit : `.hero-menu`/`.hero-menu-list`/
+  `.hero-menu-item` sont des classes CSS partagées, réutilisées telles
+  quelles ailleurs pour un vrai menu à trois entrées (le hero de la
+  fiche, `item_detail.html` - Modifier les métadonnées / Rechercher-
+  actualiser / Informations techniques) - seul le `<details
+  class="hero-menu">` du panneau de notes (`_note_widget.html`) est
+  retiré, rien de partagé n'est touché. Nouvelle classe générique
+  `.icon-btn` (36px, couleur de texte secondaire, fond au survol -
+  même gabarit que portait le ⋮ qu'elle remplace) plutôt que de
+  réutiliser `.modal-close` (sémantiquement "ferme quelque chose", pas
+  "imprime") ou `.hero-menu` (n'en est plus un).
+
+### Panneau de notes flottant : lecteur vidéo et lecteur audio (fait)
+
+Le lecteur vidéo abandonne son bloc de notes fixe sous la vidéo, et le
+lecteur audio le sien sous le lecteur `<audio>`, au profit du panneau
+flottant déjà en place dans les lecteurs PDF et EPUB (voir "Notes dans
+le lecteur PDF" plus haut) - décidé avec Gautier : repris tel quel,
+jamais adapté. Même composant (`_note_widget.html`, `floating=True`),
+même JS de glisser-déposer/redimensionnement/persistance, et surtout
+**même position/taille enregistrées** : `note_panel_left/top/width/
+height` viennent de la même table `preferences`, sans nouvelle colonne
+- un réglage d'application, pas un par lecteur. Vérifié : le panneau
+ouvert depuis `/watch` réapparaît exactement là où on l'a laissé en
+repartant de `/read` ou `/listen`, et inversement.
+
+- **Bouton "Notes"**, jamais dans `.nav-buttons` (Précédent/Suivant) :
+  ce bloc est entièrement remplacé (`outerHTML`) à chaque changement de
+  vidéo sans rechargement (voir "Changement de vidéo sans
+  rechargement" plus haut) - un bouton posé dedans perdrait son
+  écouteur et son état (`aria-expanded`) à chaque navigation. Sa propre
+  barre, en dessous, réutilise `.reader-toolbar`/`.reader-toolbar-group`
+  des lecteurs PDF/EPUB (un seul groupe ici) plutôt qu'un nouveau
+  composant - même chose côté audio, sans le problème du remplacement
+  `outerHTML` (l'audiobook n'a ni Précédent ni Suivant).
+- **Bouton "Repère" déplacé dans le panneau**, comme "Insérer la page"
+  (PDF) et "Insérer le chapitre" (EPUB) - en réalité, il y vivait déjà
+  (`_note_widget.html` génère ce bouton dans son propre bloc d'outils
+  selon `player_context.kind`, jamais un élément séparé posé dans le
+  lecteur) : son déplacement visuel suit automatiquement celui du
+  panneau lui-même, sans rien de plus à coder. Pour la vidéo, seul son
+  libellé change, pour suivre la même forme "Insérer le/la ___" :
+  **"Insérer le repère"** (`title="Insérer le repère courant"`) -
+  "repère" reste le mot déjà établi dans le projet pour ce marqueur
+  temporel (vidéo/audio), plutôt qu'un nom inventé pour l'occasion.
+  Nouvelle branche `player_context.kind == 'video'` dans
+  `_note_widget.html`, distincte de la branche générique. Pour l'audio,
+  la branche générique existante (libellé "Repère") continue de
+  s'appliquer sans changement : un seul fichier, comme le PDF, rien à
+  répéter.
+- **Colonne de chapitres audio bornée comme la playlist vidéo**
+  (`applyPlaylistBounds`, `audio_player.html`) : même règle que
+  "Hauteur et position des colonnes latérales" plus haut, copiée telle
+  quelle plutôt que d'inventer un second mécanisme - sommet aligné sur
+  le lecteur `<audio>`, bas à 20px du bas de la fenêtre quand la page
+  est en haut, palier smartphone géré par le même seuil CSS. Avant
+  cette tranche, la colonne n'avait aucune borne du tout (`.playlist`
+  ne fixe plus ni position ni hauteur depuis "Hauteur et position des
+  colonnes latérales") et descendait indéfiniment sous l'écran.
+- **Hors périmètre, explicitement.** Le bloc de notes de la fiche
+  d'item (`item_detail.html`) - tranche à part.
+
+Vérifié dans le navigateur : panneau ouvert/fermé sur `/watch` et
+`/listen`, glissé et redimensionné (position/taille enregistrées,
+retrouvées sur `/read` immédiatement après), bouton "Insérer le
+repère"/"Repère" inséré avec le même format qu'avant, aucune régression
+sur le changement de vidéo sans rechargement. La playlist vidéo et la
+colonne de chapitres audio reprennent toute la hauteur libérée par la
+disparition du bloc de notes fixe (leur hauteur ne dépendait déjà que
+du haut du lecteur, jamais de ce qu'il y a en dessous - voir "Hauteur
+et position des colonnes latérales").
+
+### Panneau de notes : poignée de redimensionnement à la main et gabarit partagé (fait)
+
+Deux problèmes distincts, réglés dans la même tranche parce que le
+second rendait le premier plus coûteux à corriger à sa place :
+
+- **Poignée de redimensionnement mal alignée**, signalé par Gautier :
+  le motif dessiné (rentré à 15px du coin, voir plus haut) et la zone
+  qui réagit réellement au glissement (la poignée native du
+  navigateur, `resize: both`, toujours calée dans le vrai coin) ne
+  coïncidaient pas - on tirait dans le vide entre les deux. Corrigé en
+  gérant le redimensionnement à la main : `resize: none` retire la
+  poignée native, un élément `.note-panel-resize-handle` porte à la
+  fois le motif ET les évènements pointer (`pointerdown`/`pointermove`/
+  `pointerup`, même schéma que le glisser-déposer de l'en-tête) - le
+  dessin est désormais la zone active, ils ne peuvent plus diverger.
+  Rentré à 6px du coin plutôt que 15px (calcul : au-delà de
+  16 × (1 − 1/√2) ≈ 4,69px, le point le plus proche du coin reste dans
+  la partie du panneau que le `border-radius` de 16px ne découpe pas -
+  6px donne une marge confortable sans flotter au milieu du panneau
+  comme le ferait 15px). Le `ResizeObserver` qui existait pour capter
+  un redimensionnement natif disparaît avec lui : le redimensionnement
+  étant désormais entièrement piloté par notre propre JS, sa fin
+  (`pointerup`) déclenche directement l'enregistrement, sans plus
+  avoir besoin d'observer la taille du dialogue ni de filtrer ses
+  propres changements programmatiques (`suppressNextPanelResizeSave`,
+  devenu inutile et retiré).
+- **Quatre copies du même panneau**, une par lecteur (PDF, EPUB, vidéo,
+  audio) - constaté en corrigeant le point précédent : la copie audio
+  avait justement été oubliée lors de la tranche précédente, exactement
+  le genre d'oubli qu'une implémentation dupliquée quatre fois finit
+  par produire. Factorisé dans `templates/_note_panel.html`, trois
+  macros important `render_note` (`_note_widget.html`) :
+  `render_notes_toggle()` (le bouton "Notes" de la barre d'outils),
+  `render_note_panel_markup(...)` (le `<dialog>`, avec la poignée de
+  redimensionnement) et `render_note_panel_script(...)` (ouverture/
+  fermeture/déplacement/redimensionnement/mémorisation) - trois macros
+  séparées parce qu'elles ne vivent pas dans la même partie de la page
+  (barre d'outils, contenu, scripts), jamais parce que leur contenu
+  diffère d'un lecteur à l'autre : un seul exemplaire de code pour les
+  quatre.
+
+`pytest tests/` (263 tests) au vert.
+
 ## Méthode — backlog
 
 Avant de commencer une tranche, relire le backlog et signaler les
@@ -1918,6 +2167,15 @@ backlog plus difficile à corriger sans le signaler d'abord.
   lourde pour le bénéfice. Les ressources n'ont pas besoin de
   mémoriser une position de lecture (fiches, exemples, compléments) ;
   les livres oui, par page.
+- Signets internes d'un PDF (sa propre table des matières, embarquée
+  dans le fichier - PDF.js sait la lire) : à afficher dans une colonne
+  latérale, selon exactement les mêmes règles de position et de hauteur
+  que la playlist vidéo et la table des matières EPUB (voir "Hauteur et
+  position des colonnes latérales") - alignée sur le haut du cadre de
+  lecture, défilant avec la page, jamais collée à l'écran. Explicitement
+  hors périmètre du lecteur PDF actuel (voir "Lecteur PDF", "hors
+  périmètre"). Tranche à part, à cadrer avec Gautier le moment venu -
+  en particulier ce qui se passe pour un PDF sans signets.
 - Section « Continuer » (grille de la bibliothèque). Écartée pour
   l'instant : la bibliothèque de test n'a que quatre items dont deux
   formations, l'écran ferait doublon avec la grille et son résultat ne

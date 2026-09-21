@@ -1,5 +1,6 @@
 {% extends "_base.html" %}
-{% from "_note_widget.html" import render_note, render_print_block %}
+{% from "_note_widget.html" import render_print_block %}
+{% from "_note_panel.html" import render_notes_toggle, render_note_panel_markup, render_note_panel_script %}
 
 {% macro playlist_row(item) %}
 {% set filename = item['relative_path'].rsplit('/', 1)[-1] %}
@@ -59,7 +60,21 @@
             {% endif %}
         </div>
 
-        {{ render_note(media['item_id'], note_text, note_updated_at, player_context=player_context) }}
+        {# Barre séparée de .nav-buttons, jamais dedans : .nav-buttons
+           est entièrement remplacé (outerHTML) à chaque changement de
+           vidéo sans rechargement (voir plus bas) - un bouton "Notes"
+           posé là perdrait son écouteur et son état à chaque
+           navigation Précédent/Suivant. #}
+        <div class="reader-toolbar video-notes-toolbar">
+            {{ render_notes_toggle() }}
+        </div>
+
+        {# Panneau flottant, repris tel quel des lecteurs PDF/EPUB - même
+           composant, mêmes réglages de position/taille (voir CLAUDE.md,
+           "Panneau de notes" et "Lecteur vidéo"), aucune seconde
+           implémentation. Le bloc de notes fixe sous le lecteur
+           disparaît au profit de ce panneau. #}
+        {{ render_note_panel_markup(media['item_id'], note_text, note_updated_at, player_context) }}
     </div>
 
     <div class="playlist" id="playlist" style="visibility: hidden;">
@@ -111,6 +126,44 @@
         if (!playlist || !player) {
             return;
         }
+
+        // --- Position et hauteur de la colonne, alignées sur la vidéo ----
+        // Décidé avec Gautier (voir CLAUDE.md, "Hauteur et position des
+        // colonnes latérales") : la colonne n'est plus ancrée à l'écran
+        // (position: sticky, voir style.css) - un élément de page normal,
+        // qui défile avec elle comme la vidéo. Son sommet est aligné sur
+        // celui de la vidéo (margin-top, la colonne n'a pas de fil
+        // d'Ariane/titre au-dessus comme .main) et sa hauteur calculée
+        // pour s'arrêter ~20px avant le bas de la fenêtre - toujours en
+        // fonction de la position de la page au chargement (haut de
+        // page), jamais recalculée pendant qu'on défile.
+        var PLAYLIST_BOTTOM_MARGIN = 20;
+        var MOBILE_BREAKPOINT = 719;
+
+        function applyPlaylistBounds() {
+            if (window.innerWidth <= MOBILE_BREAKPOINT) {
+                // Palier smartphone : la colonne passe sous la vidéo,
+                // pleine largeur, entièrement géré par le media query CSS
+                // (voir style.css) - rien à calculer ici.
+                playlist.style.marginTop = '';
+                playlist.style.maxHeight = '';
+                return;
+            }
+            // Remis à 0 avant de mesurer : un ancien margin-top fausserait
+            // sinon la position lue juste après (elle inclurait déjà le
+            // décalage qu'on est en train de recalculer).
+            playlist.style.marginTop = '0px';
+            var videoDocTop = player.getBoundingClientRect().top + window.scrollY;
+            var playlistDocTop = playlist.getBoundingClientRect().top + window.scrollY;
+            var offset = Math.max(0, videoDocTop - playlistDocTop);
+            playlist.style.marginTop = offset + 'px';
+            var alignedDocTop = playlistDocTop + offset;
+            playlist.style.maxHeight =
+                Math.max(200, window.innerHeight - alignedDocTop - PLAYLIST_BOTTOM_MARGIN) + 'px';
+        }
+
+        applyPlaylistBounds();
+        window.addEventListener('resize', applyPlaylistBounds);
 
         // --- État des chapitres (ouvert/fermé), par item -----------------
         // Le chapitre qui contient la vidéo courante s'ouvre toujours et
@@ -616,4 +669,6 @@
         });
     })();
 </script>
+
+{{ render_note_panel_script(note_panel_left, note_panel_top, note_panel_width, note_panel_height) }}
 {% endblock %}

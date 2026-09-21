@@ -1,13 +1,24 @@
-{% macro render_note(item_id, note_text, note_updated_at, player_context=None) %}
+{% macro render_note(item_id, note_text, note_updated_at, player_context=None, floating=False) %}
 <div class="card note-card" id="notes">
     <div class="note-header">
         <h3>Notes</h3>
-        <details class="hero-menu">
-            <summary aria-label="Plus d'actions" title="Plus d'actions">⋮</summary>
-            <div class="hero-menu-list" role="menu">
-                <button type="button" class="hero-menu-item" id="print-note" role="menuitem">Imprimer</button>
-            </div>
-        </details>
+        <div class="note-header-actions">
+            {# Menu ⋮ à une seule entrée retiré (décidé avec Gautier) :
+               un bouton unique, icône d'imprimante + infobulle, plutôt
+               qu'un menu à ouvrir pour une seule action. .hero-menu/
+               .hero-menu-list/.hero-menu-item restent utilisées telles
+               quelles ailleurs (menu à trois entrées du hero de la
+               fiche, item_detail.html) - vérifié avant de ne toucher
+               qu'ici, rien de partagé n'est supprimé. #}
+            <button type="button" class="icon-btn" id="print-note" title="Imprimer" aria-label="Imprimer">🖨</button>
+            {% if floating %}
+            {# Panneau flottant (lecteurs PDF/EPUB) seulement : Échap
+               fermait déjà le panneau mais restait la seule issue
+               visible - une croix à côté du menu en donne une seconde,
+               explicite, à la souris. #}
+            <button type="button" class="modal-close" id="close-notes-panel" aria-label="Fermer le panneau de notes" title="Fermer">×</button>
+            {% endif %}
+        </div>
     </div>
 
     <div id="local-restore-banner"></div>
@@ -22,6 +33,13 @@
         <button type="button" class="toolbar-btn" data-md="code" title="Bloc de code">Code</button>
         {% if player_context and player_context.kind == 'book' %}
         <button type="button" class="toolbar-btn" id="insert-marker" title="Insérer la page courante">Insérer la page</button>
+        {% elif player_context and player_context.kind == 'video' %}
+        {# Même forme que "Insérer la page"/"Insérer le chapitre" - le
+           lecteur vidéo passe au panneau flottant, ce bouton (déjà dans
+           le composant, jamais séparé) le suit tel quel. "Repère" reste
+           le mot du projet pour ce marqueur temporel (voir CLAUDE.md) :
+           repris comme nom plutôt que remplacé par un terme nouveau. #}
+        <button type="button" class="toolbar-btn" id="insert-marker" title="Insérer le repère courant">Insérer le repère</button>
         {% elif player_context %}
         <button type="button" class="toolbar-btn" id="insert-marker" title="Insérer un repère">Repère</button>
         {% endif %}
@@ -259,18 +277,7 @@
     });
 
     document.getElementById('print-note').addEventListener('click', function () {
-        var menu = document.querySelector('#notes details.hero-menu');
-        if (menu) {
-            menu.open = false;
-        }
         window.print();
-    });
-
-    document.addEventListener('click', function (event) {
-        var menu = document.querySelector('#notes details.hero-menu');
-        if (menu && menu.open && !menu.contains(event.target)) {
-            menu.open = false;
-        }
     });
 
     // Chaque bouton insère sa syntaxe autour de la sélection (ou d'un

@@ -109,7 +109,7 @@ def test_note_visible_aussi_sur_le_lecteur_video(client) -> None:
     player_page = client.get(f"/watch/{media_id}").data.decode()
 
     assert "Note partagee" in player_page
-    assert "Insérer un repère" in player_page
+    assert "Insérer le repère" in player_page
 
 
 def test_note_visible_aussi_sur_le_lecteur_pdf(client) -> None:

@@ -536,9 +536,12 @@ def test_centrage_playlist_present(client) -> None:
     # Non-régression sur le gabarit rendu, même principe que le
     # garde-fou "played" ci-dessous : pas de navigateur dans cette
     # suite pour vérifier le défilement réel, seulement la présence du
-    # mécanisme. Plus de dépendance à "loadedmetadata" ni à un
-    # ResizeObserver depuis que la hauteur de .playlist est purement
-    # CSS (position: sticky) - le script s'exécute directement.
+    # mécanisme. Plus de dépendance à "loadedmetadata" ni à
+    # syncPlaylistHeight (l'ancien ResizeObserver sur .main, abandonné -
+    # voir CLAUDE.md "Hauteur et position des colonnes latérales") : la
+    # hauteur/position de .playlist est calculée par applyPlaylistBounds
+    # (margin-top + max-height, ni sticky ni recopiée sur .main), le
+    # script de centrage s'exécute directement.
     # Positionnement initial direct (scrollTop), jamais animé : la
     # liste reste masquée (visibility: hidden) jusqu'à être
     # positionnée, pour qu'aucun mouvement ne soit visible à l'écran au
@@ -558,7 +561,7 @@ def test_centrage_playlist_present(client) -> None:
     assert "document.referrer" not in data
     assert 'id="playlist" style="visibility: hidden;"' in data
     assert "playlist.style.visibility = 'visible'" in data
-    assert "new ResizeObserver" not in data
+    assert "function applyPlaylistBounds" in data
     assert "syncPlaylistHeight" not in data
 
 
@@ -1499,6 +1502,41 @@ def test_listen_sans_chapitres_pas_de_colonne(client) -> None:
     assert "chapter-row" not in data
 
 
+def test_listen_panneau_de_notes_flottant_present(client) -> None:
+    # Même panneau, partagé avec les lecteurs vidéo/PDF/EPUB
+    # (templates/_note_panel.html) - remplace le bloc de notes fixe
+    # sous le lecteur qu'avait encore /listen.
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+
+    response = client.get(f"/listen/{media_id}")
+    data = response.data.decode()
+
+    assert 'id="reader-toggle-notes"' in data
+    assert 'id="dialog-note"' in data
+    assert "notesDialog.show();" in data
+    assert "notesDialog.showModal()" not in data
+    # Le bouton de repère vit dans le panneau (barre d'outils de la
+    # note), jamais séparé dans le lecteur.
+    assert 'id="insert-marker"' in data
+
+
+def test_listen_colonne_chapitres_bornee_comme_la_playlist_video(client) -> None:
+    # Même règle que la playlist vidéo et la table des matières EPUB
+    # (voir CLAUDE.md, "Hauteur et position des colonnes latérales") :
+    # non-régression sur le gabarit rendu, pas un navigateur réel dans
+    # cette suite.
+    media_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    set_chapters(client, media_id, [(0, "Introduction", 0.0, 60.0)])
+
+    response = client.get(f"/listen/{media_id}")
+    data = response.data.decode()
+
+    assert "function applyPlaylistBounds" in data
+    assert "PLAYLIST_BOTTOM_MARGIN" in data
+    assert "playerDocTop" in data
+    assert 'id="playlist" style="visibility: hidden;"' in data
+
+
 def test_watch_naffiche_aucune_colonne_de_chapitres(client) -> None:
     # chapters_probed_at/media_chapters ne sont pas restreints aux
     # fichiers audio (voir library_index.py), mais l'affichage, lui,
@@ -2243,11 +2281,17 @@ def test_lecteur_pdf_panneau_notes_deplacable_et_redimensionnable(client) -> Non
     # dessus ne doit pas démarrer un déplacement.
     assert "noteHeader.addEventListener('pointerdown'" in data
     assert "event.target.closest('button, summary')" in data
-    # Redimensionnable par un coin : poignée native du navigateur
-    # (CSS resize, vérifié dans static/style.css), pas de code de
-    # glisser-déposer réinventé pour ça - seule la persistance de la
-    # nouvelle taille est câblée ici.
-    assert "new ResizeObserver(" in data
+    # Redimensionnable par un coin : poignée dessinée à la main
+    # (.note-panel-resize-handle, static/style.css) et gérée par
+    # évènements pointeur, comme le déplacement - plus de poignée
+    # native du navigateur (`resize: both`, retirée) ni de
+    # ResizeObserver, dont la zone interactive restait toujours calée
+    # dans le vrai coin même quand le motif dessiné dessus était
+    # décalé pour rester visible sous le coin arrondi du panneau (bug
+    # trouvé par Gautier - voir CLAUDE.md).
+    assert "resizeHandle.addEventListener('pointerdown'" in data
+    assert "resizeHandle.addEventListener('pointermove'" in data
+    assert "new ResizeObserver(" not in data
     # Jamais traînable/redimensionnable hors d'atteinte.
     assert "PANEL_MIN_VISIBLE" in data
     assert "clampPanelPosition" in data
@@ -2433,6 +2477,60 @@ def test_enregistrement_position_et_taille_du_panneau_de_notes(client) -> None:
     assert row["note_panel_height"] == 500
 
 
+def test_panneau_de_notes_rectangle_degenere_ignore(client) -> None:
+    # Reproduit le bug trouvé avec Gautier : un dialogue fermé pendant
+    # l'anti-rebond du déplacement/redimensionnement mesure un
+    # rectangle nul (getBoundingClientRect d'un élément caché) - ne
+    # doit jamais écraser une géométrie valable déjà enregistrée.
+    client.post(
+        "/preferences",
+        data={
+            "note_panel_left": "120.5",
+            "note_panel_top": "80",
+            "note_panel_width": "700",
+            "note_panel_height": "500",
+        },
+    )
+
+    response = client.post(
+        "/preferences",
+        data={
+            "note_panel_left": "0",
+            "note_panel_top": "0",
+            "note_panel_width": "0",
+            "note_panel_height": "0",
+        },
+    )
+
+    assert response.status_code == 204
+    row = fetch_preferences(client)
+    assert row["note_panel_left"] == 120.5
+    assert row["note_panel_top"] == 80
+    assert row["note_panel_width"] == 700
+    assert row["note_panel_height"] == 500
+
+
+def test_panneau_de_notes_rectangle_degenere_ignore_meme_sans_valeur_precedente(
+    client,
+) -> None:
+    response = client.post(
+        "/preferences",
+        data={
+            "note_panel_left": "0",
+            "note_panel_top": "0",
+            "note_panel_width": "0",
+            "note_panel_height": "0",
+        },
+    )
+
+    assert response.status_code == 204
+    row = fetch_preferences(client)
+    assert row["note_panel_left"] is None
+    assert row["note_panel_top"] is None
+    assert row["note_panel_width"] is None
+    assert row["note_panel_height"] is None
+
+
 def test_panneau_de_notes_deplace_ne_touche_pas_au_mode_ni_au_zoom(client) -> None:
     client.post("/preferences", data={"reading_mode": "paginated", "reading_zoom": "1.5"})
     client.post(
@@ -2488,3 +2586,15 @@ def test_panneau_de_notes_position_globale_pas_par_livre(client) -> None:
     assert "var savedPanelTop = 24.0;" in data
     assert "var savedPanelWidth = 600.0;" in data
     assert "var savedPanelHeight = 450.0;" in data
+
+    # Le lecteur audio (/listen) reçoit le même réglage - il en avait
+    # été oublié lors d'une tranche précédente (listen_audio ne lisait
+    # pas fetch_reading_preferences), corrigé ici : voir aussi
+    # test_listen_panneau_de_notes_flottant_present.
+    audio_id = media_id_by_relative_path(client, "livre-audio.m4b")
+    audio_data = client.get(f"/listen/{audio_id}").data.decode()
+
+    assert "var savedPanelLeft = 42.0;" in audio_data
+    assert "var savedPanelTop = 24.0;" in audio_data
+    assert "var savedPanelWidth = 600.0;" in audio_data
+    assert "var savedPanelHeight = 450.0;" in audio_data

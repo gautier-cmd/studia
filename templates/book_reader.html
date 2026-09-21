@@ -1,5 +1,6 @@
 {% extends "_base.html" %}
-{% from "_note_widget.html" import render_note, render_print_block %}
+{% from "_note_widget.html" import render_print_block %}
+{% from "_note_panel.html" import render_notes_toggle, render_note_panel_markup, render_note_panel_script %}
 
 {% block title %}{{ book_title }} - Studia{% endblock %}
 
@@ -34,18 +35,14 @@
                 <button type="button" class="btn-mini" id="reader-zoom-in" aria-label="Agrandir le zoom">+</button>
             </div>
 
-            <div class="reader-toolbar-group reader-notes" role="group" aria-label="Notes">
-                <button type="button" class="btn-mini" id="reader-toggle-notes" aria-expanded="false">Notes</button>
-            </div>
+            {{ render_notes_toggle() }}
         </div>
 
         <div id="reader-viewport" class="reader-viewport">
             <div id="reader-pages"></div>
         </div>
 
-        <dialog class="modal modal-note" id="dialog-note" aria-label="Notes">
-            {{ render_note(media['item_id'], note_text, note_updated_at, player_context=player_context) }}
-        </dialog>
+        {{ render_note_panel_markup(media['item_id'], note_text, note_updated_at, player_context) }}
     </div>
 </div>
 {% endblock %}
@@ -78,15 +75,6 @@
     // pixels figée, qui serait fausse sur un autre écran ou un autre
     // livre (voir CLAUDE.md, tranche "Lecteur PDF").
     var zoom = {{ (reading_zoom or 1.0) | tojson }};
-
-    // Position/taille du panneau de notes, mémorisées comme le mode et
-    // le zoom (préférences de l'application, pas du livre) - null tant
-    // qu'il n'a jamais été déplacé/redimensionné : une position par
-    // défaut est alors calculée (voir applyInitialPanelGeometry).
-    var savedPanelLeft = {{ note_panel_left | tojson }};
-    var savedPanelTop = {{ note_panel_top | tojson }};
-    var savedPanelWidth = {{ note_panel_width | tojson }};
-    var savedPanelHeight = {{ note_panel_height | tojson }};
 
     var viewport = document.getElementById('reader-viewport');
     var pagesContainer = document.getElementById('reader-pages');
@@ -520,194 +508,6 @@
         }
     });
 
-    // --- Panneau de notes flottant, non modal ---------------------------
-    // Même note que la fiche de l'item (_note_widget.html, reprise
-    // telle quelle) : ce bloc ne touche qu'à son ouverture/fermeture/
-    // position/taille, jamais à son contenu. Affiché par .show(), pas
-    // .showModal() : le reste de la page (dont la couche de texte
-    // sélectionnable posée par PDF.js sur chaque page) reste utilisable
-    // pendant qu'il est ouvert - défilement, changement de page, zoom,
-    // et sélection de texte à copier-coller dans la note. Conséquence
-    // assumée : pas de piège de focus (il empêcherait de cliquer
-    // ailleurs), pas de fermeture au clic en dehors (un clic en dehors
-    // sert maintenant à lire) - seuls le bouton "Notes" et Échap
-    // ferment le panneau. Ouvrir/fermer/déplacer/redimensionner ne
-    // touche à aucun état du lecteur (rendu, défilement, observateurs).
-    var toggleNotesBtn = document.getElementById('reader-toggle-notes');
-    var notesDialog = document.getElementById('dialog-note');
-    var noteHeader = notesDialog.querySelector('.note-header');
-
-    function openNotesDialog() {
-        toggleNotesBtn.setAttribute('aria-expanded', 'true');
-        suppressNextPanelResizeSave = true;
-        notesDialog.show();
-        if (panelGeometryInitialized) {
-            keepPanelWithinViewport();
-        } else {
-            applyInitialPanelGeometry();
-            panelGeometryInitialized = true;
-        }
-    }
-
-    function closeNotesDialog() {
-        var hadFocusInside = notesDialog.contains(document.activeElement);
-        notesDialog.close();
-        if (hadFocusInside) {
-            toggleNotesBtn.focus();
-        }
-    }
-
-    // Le bouton Notes ouvre et ferme (même bouton) ; Échap ferme aussi,
-    // qu'on soit en train de lire (focus hors du panneau) ou d'éditer
-    // la note - un clic en dehors, lui, ne ferme plus rien (voir plus
-    // haut).
-    toggleNotesBtn.addEventListener('click', function () {
-        if (notesDialog.open) {
-            closeNotesDialog();
-        } else {
-            openNotesDialog();
-        }
-    });
-
-    document.addEventListener('keydown', function (event) {
-        if (event.key === 'Escape' && notesDialog.open) {
-            closeNotesDialog();
-        }
-    });
-
-    // --- Position et taille : réglages de l'application, comme le mode
-    // et le zoom (une seule valeur pour tous les livres) -----------------
-    var PANEL_DEFAULT_WIDTH = 640;
-    var PANEL_DEFAULT_HEIGHT = 480;
-    // Largeur/hauteur du panneau qui doit toujours rester visible et
-    // saisissable, même tiré au bord de l'écran : jamais totalement
-    // hors champ au point de ne plus pouvoir être rattrapé.
-    var PANEL_MIN_VISIBLE = 80;
-
-    var panelGeometryInitialized = false;
-    var suppressNextPanelResizeSave = false;
-    var panelSaveTimer = null;
-
-    function schedulePanelSave() {
-        clearTimeout(panelSaveTimer);
-        panelSaveTimer = setTimeout(function () {
-            var rect = notesDialog.getBoundingClientRect();
-            savePreference({
-                note_panel_left: rect.left,
-                note_panel_top: rect.top,
-                note_panel_width: rect.width,
-                note_panel_height: rect.height
-            });
-        }, 900);
-    }
-
-    function clampPanelPosition(left, top, width, height) {
-        var maxLeft = window.innerWidth - PANEL_MIN_VISIBLE;
-        var minLeft = PANEL_MIN_VISIBLE - width;
-        var maxTop = window.innerHeight - PANEL_MIN_VISIBLE;
-        return {
-            left: Math.min(Math.max(left, minLeft), maxLeft),
-            top: Math.min(Math.max(top, 0), maxTop)
-        };
-    }
-
-    function setPanelPosition(left, top) {
-        var rect = notesDialog.getBoundingClientRect();
-        var clamped = clampPanelPosition(left, top, rect.width, rect.height);
-        notesDialog.style.left = clamped.left + 'px';
-        notesDialog.style.top = clamped.top + 'px';
-    }
-
-    // Position/taille enregistrées sur un autre écran (ou une fenêtre
-    // depuis redimensionnée) peuvent placer le panneau hors champ, ou
-    // le rendre plus grand que la fenêtre actuelle : on le ramène
-    // visuellement dans l'écran à l'ouverture, sans jamais réécrire la
-    // valeur enregistrée tant que ce n'est pas un vrai geste de
-    // l'utilisateur (déplacement/redimensionnement) - un autre écran,
-    // ou cette même fenêtre agrandie plus tard, doit pouvoir la
-    // retrouver telle quelle.
-    function keepPanelWithinViewport() {
-        var rect = notesDialog.getBoundingClientRect();
-        setPanelPosition(rect.left, rect.top);
-    }
-
-    function applyInitialPanelGeometry() {
-        var width = savedPanelWidth || PANEL_DEFAULT_WIDTH;
-        var height = savedPanelHeight || PANEL_DEFAULT_HEIGHT;
-        notesDialog.style.width = width + 'px';
-        notesDialog.style.height = height + 'px';
-
-        // Tient compte du plafond CSS (max-width/max-height) : la
-        // taille réellement obtenue peut être plus petite que celle
-        // demandée sur un petit écran.
-        var rect = notesDialog.getBoundingClientRect();
-        var left = savedPanelLeft;
-        var top = savedPanelTop;
-        if (left === null || top === null) {
-            left = (window.innerWidth - rect.width) / 2;
-            top = (window.innerHeight - rect.height) / 2;
-        }
-        setPanelPosition(left, top);
-    }
-
-    // Barre de titre (.note-header : "Notes" + menu ⋮) comme poignée de
-    // déplacement - un clic sur un bouton ou le résumé ⋮ qu'elle
-    // contient ouvre le menu normalement plutôt que de démarrer un
-    // déplacement.
-    var dragOffset = null;
-
-    noteHeader.addEventListener('pointerdown', function (event) {
-        if (event.target.closest('button, summary')) {
-            return;
-        }
-        var rect = notesDialog.getBoundingClientRect();
-        dragOffset = {x: event.clientX - rect.left, y: event.clientY - rect.top};
-        noteHeader.setPointerCapture(event.pointerId);
-        event.preventDefault();
-    });
-
-    noteHeader.addEventListener('pointermove', function (event) {
-        if (!dragOffset) {
-            return;
-        }
-        setPanelPosition(event.clientX - dragOffset.x, event.clientY - dragOffset.y);
-    });
-
-    function endPanelDrag() {
-        if (!dragOffset) {
-            return;
-        }
-        dragOffset = null;
-        schedulePanelSave();
-    }
-    noteHeader.addEventListener('pointerup', endPanelDrag);
-    noteHeader.addEventListener('pointercancel', endPanelDrag);
-
-    // Redimensionnement par le coin bas-droit : poignée native du
-    // navigateur (CSS `resize: both` sur .modal-note), pas de code de
-    // glisser-déposer à refaire - seule sa conséquence (mémoriser la
-    // nouvelle taille) est câblée ici, via ResizeObserver. Sa première
-    // notification suit chaque .show()/changement de largeur/hauteur
-    // programmatique (pas un vrai redimensionnement par l'utilisateur)
-    // et doit donc être ignorée - voir suppressNextPanelResizeSave,
-    // remis à true juste avant chacun de ces changements.
-    new ResizeObserver(function () {
-        if (suppressNextPanelResizeSave) {
-            suppressNextPanelResizeSave = false;
-            return;
-        }
-        schedulePanelSave();
-    }).observe(notesDialog);
-
-    // Le panneau garde sa position/taille si la fenêtre change pendant
-    // qu'il est ouvert (même principe qu'à l'ouverture, sans jamais
-    // réécrire la valeur enregistrée pour autant).
-    window.addEventListener('resize', function () {
-        if (notesDialog.open) {
-            keepPanelWithinViewport();
-        }
-    });
-
     // --- Chargement -----------------------------------------------------
     applyViewportBounds();
 
@@ -750,4 +550,6 @@
         });
     });
 </script>
+
+{{ render_note_panel_script(note_panel_left, note_panel_top, note_panel_width, note_panel_height) }}
 {% endblock %}

@@ -2098,6 +2098,12 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         conn = connect_database(app.config["DB_PATH"])
         try:
             note = fetch_note(conn, media["library_path"])
+            # Position/taille du panneau de notes flottant - réglage de
+            # l'application, partagé avec les lecteurs PDF et EPUB (même
+            # table `preferences`, voir CLAUDE.md "Panneau de notes") :
+            # aucune colonne propre à la vidéo, le panneau garde sa place
+            # d'un lecteur à l'autre.
+            preferences = fetch_reading_preferences(conn)
         finally:
             conn.close()
 
@@ -2137,6 +2143,10 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             progress_states=progress_states,
             note_text=note["text"] if note else "",
             note_updated_at=note["updated_at"] if note else None,
+            note_panel_left=preferences["note_panel_left"],
+            note_panel_top=preferences["note_panel_top"],
+            note_panel_width=preferences["note_panel_width"],
+            note_panel_height=preferences["note_panel_height"],
             player_context={
                 "kind": "video",
                 "number": position + 1,
@@ -2167,6 +2177,9 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         conn = connect_database(app.config["DB_PATH"])
         try:
             note = fetch_note(conn, media["library_path"])
+            # Panneau de notes flottant, même réglage d'application que
+            # /watch/read/read-epub (voir CLAUDE.md "Panneau de notes").
+            preferences = fetch_reading_preferences(conn)
         finally:
             conn.close()
 
@@ -2191,6 +2204,10 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             current_chapter_number=current_chapter_number,
             note_text=note["text"] if note else "",
             note_updated_at=note["updated_at"] if note else None,
+            note_panel_left=preferences["note_panel_left"],
+            note_panel_top=preferences["note_panel_top"],
+            note_panel_width=preferences["note_panel_width"],
+            note_panel_height=preferences["note_panel_height"],
             player_context={
                 "kind": "audio",
                 "title": audio_title,
@@ -2271,6 +2288,20 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
 
         if reading_mode is not None and reading_mode not in READING_MODES:
             abort(400)
+
+        # Filet côté serveur : un panneau fermé pendant l'anti-rebond du
+        # déplacement/redimensionnement (voir schedulePanelSave côté
+        # client) mesure un rectangle dégénéré (0, 0, 0, 0) - jamais une
+        # taille valable, le panneau a un min-width/min-height en CSS.
+        # Ignorer les quatre champs ensemble plutôt que d'enregistrer
+        # une position sans la taille qui va avec.
+        if (note_panel_width is not None and note_panel_width <= 0) or (
+            note_panel_height is not None and note_panel_height <= 0
+        ):
+            note_panel_left = None
+            note_panel_top = None
+            note_panel_width = None
+            note_panel_height = None
 
         conn = connect_database(app.config["DB_PATH"])
 
