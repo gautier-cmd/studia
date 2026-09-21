@@ -11,8 +11,14 @@
 {% block content %}
 <div class="layout">
     <div class="main">
+        {# Titre retiré d'ici (uniformisation de la barre d'outils, voir
+           CLAUDE.md "Barre d'outils des lecteurs") : le fil d'Ariane
+           juste au-dessus porte déjà ce titre - un livre ne change
+           jamais de titre d'une page à l'autre comme une vidéo change
+           de leçon, donc rien à afficher de plus dans la barre côté
+           PDF/EPUB (contrairement à vidéo/audio, où le titre du média
+           courant, lui, change). #}
         <a class="back" href="{{ url_for('item_detail', item_id=media['item_id']) }}">← {{ media['item_title'] }}</a>
-        <h1>{{ book_title }}</h1>
 
         <div class="reader-toolbar">
             <div class="reader-toolbar-group" role="group" aria-label="Mode d'affichage">

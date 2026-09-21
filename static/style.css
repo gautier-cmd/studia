@@ -1607,13 +1607,6 @@ a.back {
     margin-bottom: var(--space-16);
 }
 
-body.page-player h1 {
-    font-size: var(--font-size-section-title);
-    font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-heading);
-    margin-bottom: var(--space-16);
-}
-
 video {
     width: 100%;
     border-radius: var(--radius-lg);
@@ -1904,22 +1897,25 @@ audio {
     gap: var(--space-8);
 }
 
-/* Bouton "Notes" du lecteur vidéo, dans sa propre barre (jamais dans
-   .nav-buttons - voir video_player.html) : reprend .reader-toolbar/
-   .reader-toolbar-group des lecteurs PDF/EPUB, un seul groupe ici
-   plutôt que plusieurs - aligné à droite comme leur propre groupe
-   "Notes", au lieu de coller à gauche par défaut (justify-content:
-   space-between de .reader-toolbar, avec un seul enfant). Après
-   .reader-toolbar-group dans le fichier : même spécificité qu'une
-   seule classe sur .reader-toolbar, l'ordre déciderait sinon en sa
-   faveur. */
-/* Même bouton "Notes", même barre à un seul groupe, sur le lecteur
-   audio (audio_player.html) - reprend la même règle que celle du
-   lecteur vidéo ci-dessus plutôt que de la dupliquer sous un autre
-   nom. */
-.video-notes-toolbar,
-.audio-notes-toolbar {
-    justify-content: flex-end;
+/* Titre du média dans la barre d'outils des lecteurs vidéo/audio
+   (uniformisation de la barre - voir CLAUDE.md, "Barre d'outils des
+   lecteurs") : occupe la place laissée par le <h1> retiré, à gauche du
+   bouton "Notes" (justify-content: space-between de .reader-toolbar
+   les sépare déjà, comme les groupes de la barre PDF/EPUB - aucun
+   correctif d'alignement à part). flex: 1 1 auto + min-width: 0 :
+   laisse le bouton "Notes" toujours atteindre le bord droit et permet
+   la troncature sur un titre long (ellipsis) plutôt que de le pousser
+   hors du cadre. */
+.reader-toolbar-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: var(--font-size-card-title);
+    font-weight: var(--font-weight-semibold);
+    line-height: 1.2;
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .reader-toolbar .btn-mini[aria-pressed="true"] {

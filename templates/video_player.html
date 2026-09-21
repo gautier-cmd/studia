@@ -35,10 +35,23 @@
 {% block active_nav %}library{% endblock %}
 
 {% block content %}
+{% set media_title = clean_file_title(media['relative_path'].rsplit('/', 1)[-1]) %}
 <div class="layout">
     <div class="main">
         <a class="back" href="{{ url_for('item_detail', item_id=media['item_id']) }}">← {{ media['item_title'] }}</a>
-        <h1>{{ clean_file_title(media['relative_path'].rsplit('/', 1)[-1]) }}</h1>
+
+        {# Barre d'outils uniforme avec les lecteurs audio/PDF/EPUB (voir
+           CLAUDE.md, "Barre d'outils des lecteurs") : directement
+           au-dessus du contenu, jamais entre la vidéo et .nav-buttons
+           comme avant. Le titre du média (auparavant un <h1> séparé,
+           voir goToMedia plus bas pour sa mise à jour sans
+           rechargement) rejoint la barre à gauche, jamais dupliqué -
+           .nav-buttons reste sous la vidéo, à sa place attendue. #}
+        <div class="reader-toolbar">
+            <span class="reader-toolbar-title" title="{{ media_title }}">{{ media_title }}</span>
+            {{ render_notes_toggle() }}
+        </div>
+
         <video id="player" controls autoplay
                src="{{ url_for('media_file', media_id=media['id']) }}"
                data-media-id="{{ media['id'] }}"
@@ -60,20 +73,9 @@
             {% endif %}
         </div>
 
-        {# Barre séparée de .nav-buttons, jamais dedans : .nav-buttons
-           est entièrement remplacé (outerHTML) à chaque changement de
-           vidéo sans rechargement (voir plus bas) - un bouton "Notes"
-           posé là perdrait son écouteur et son état à chaque
-           navigation Précédent/Suivant. #}
-        <div class="reader-toolbar video-notes-toolbar">
-            {{ render_notes_toggle() }}
-        </div>
-
-        {# Panneau flottant, repris tel quel des lecteurs PDF/EPUB - même
-           composant, mêmes réglages de position/taille (voir CLAUDE.md,
-           "Panneau de notes" et "Lecteur vidéo"), aucune seconde
-           implémentation. Le bloc de notes fixe sous le lecteur
-           disparaît au profit de ce panneau. #}
+        {# Panneau flottant, partagé avec les lecteurs PDF/EPUB/audio
+           (templates/_note_panel.html) : le bloc de notes fixe sous le
+           lecteur disparaît au profit de ce panneau. #}
         {{ render_note_panel_markup(media['item_id'], note_text, note_updated_at, player_context) }}
     </div>
 
@@ -554,10 +556,11 @@
 
             document.title = doc.title;
 
-            var newH1 = doc.querySelector('h1');
-            var ownH1 = document.querySelector('h1');
-            if (newH1 && ownH1) {
-                ownH1.textContent = newH1.textContent;
+            var newTitleEl = doc.querySelector('.reader-toolbar-title');
+            var ownTitleEl = document.querySelector('.reader-toolbar-title');
+            if (newTitleEl && ownTitleEl) {
+                ownTitleEl.textContent = newTitleEl.textContent;
+                ownTitleEl.title = newTitleEl.title;
             }
 
             var newNavButtons = doc.querySelector('.nav-buttons');
@@ -667,6 +670,7 @@
                 }
             });
         });
+
     })();
 </script>
 

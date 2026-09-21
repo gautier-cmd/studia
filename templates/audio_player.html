@@ -9,25 +9,27 @@
 {% block active_nav %}library{% endblock %}
 
 {% block content %}
+{% set media_title = clean_file_title(media['relative_path'].rsplit('/', 1)[-1]) %}
 <div class="layout">
     <div class="main">
         <a class="back" href="{{ url_for('item_detail', item_id=media['item_id']) }}">← {{ media['item_title'] }}</a>
-        <h1>{{ clean_file_title(media['relative_path'].rsplit('/', 1)[-1]) }}</h1>
-        <audio id="player" controls autoplay src="{{ url_for('media_file', media_id=media['id']) }}"></audio>
 
-        {# Barre séparée des contrôles natifs du lecteur, sur le modèle
-           du lecteur vidéo (voir CLAUDE.md, "Panneau de notes flottant :
-           lecteur vidéo") : bouton "Notes" qui ouvre/ferme le panneau
-           flottant ci-dessous, à la place du bloc de notes fixe
-           d'avant. #}
-        <div class="reader-toolbar audio-notes-toolbar">
+        {# Barre d'outils uniforme avec les lecteurs vidéo/PDF/EPUB (voir
+           CLAUDE.md, "Barre d'outils des lecteurs") : directement
+           au-dessus du contenu. Le titre du média (auparavant un <h1>
+           séparé) rejoint la barre à gauche, jamais dupliqué ; le
+           bouton "Notes" ouvre/ferme le panneau flottant ci-dessous, à
+           la place du bloc de notes fixe d'avant. #}
+        <div class="reader-toolbar">
+            <span class="reader-toolbar-title" title="{{ media_title }}">{{ media_title }}</span>
             {{ render_notes_toggle() }}
         </div>
 
-        {# Panneau flottant, repris tel quel des lecteurs vidéo/PDF/EPUB -
-           même composant, mêmes réglages de position/taille (voir
-           CLAUDE.md), aucune seconde implémentation. Le bloc de notes
-           fixe sous le lecteur disparaît au profit de ce panneau. #}
+        <audio id="player" controls autoplay src="{{ url_for('media_file', media_id=media['id']) }}"></audio>
+
+        {# Panneau flottant, partagé avec les lecteurs vidéo/PDF/EPUB
+           (templates/_note_panel.html) : le bloc de notes fixe sous le
+           lecteur disparaît au profit de ce panneau. #}
         {{ render_note_panel_markup(media['item_id'], note_text, note_updated_at, player_context) }}
     </div>
 

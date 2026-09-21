@@ -11,8 +11,11 @@
 {% block content %}
 <div class="layout">
     <div class="main">
+        {# Titre retiré d'ici (uniformisation de la barre d'outils, voir
+           CLAUDE.md "Barre d'outils des lecteurs") : le fil d'Ariane
+           juste au-dessus porte déjà ce titre - même raisonnement que
+           book_reader.html. #}
         <a class="back" href="{{ url_for('item_detail', item_id=media['item_id']) }}">← {{ media['item_title'] }}</a>
-        <h1>{{ book_title }}</h1>
 
         {% if format_error %}
         {# EPUB3 sans repli NCX, ou fichier corrompu (voir epub_book.py)

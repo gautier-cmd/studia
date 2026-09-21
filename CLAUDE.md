@@ -2465,6 +2465,59 @@ même en fermant juste après un déplacement.
 
 `pytest tests/` (298 tests) au vert.
 
+### Barre d'outils des lecteurs (fait)
+
+Habillage seul, décidé avec Gautier : ni le modèle de données, ni la
+progression, ni le panneau de notes lui-même n'y touchent. Les quatre
+lecteurs ont désormais une barre d'outils au même endroit, à la même
+hauteur, directement au-dessus du contenu - jamais un autre élément
+entre les deux, contrairement à avant (la barre du lecteur vidéo vivait
+sous `.nav-buttons`, celle du lecteur audio sous `<audio>`).
+
+- **PDF et EPUB : contenu de la barre inchangé** (mode de lecture,
+  navigation de page/chapitre, zoom/taille de texte, bouton "Notes" à
+  droite comme avant).
+- **Vidéo et audio : le titre du média rejoint la barre, à gauche du
+  bouton "Notes".** Le `<h1>` séparé qui le portait auparavant
+  disparaît - `.reader-toolbar-title` (`flex: 1 1 auto`, tronqué à
+  l'ellipsis sur un titre long) occupe sa place, `justify-content:
+  space-between` de `.reader-toolbar` suffit à séparer les deux sans
+  correctif d'alignement supplémentaire (`.video-notes-toolbar`/
+  `.audio-notes-toolbar`, qui forçaient `justify-content: flex-end`
+  pour un unique groupe "Notes", deviennent inutiles et sont retirées).
+  Pour la vidéo, `goToMedia` (changement de vidéo sans rechargement)
+  met à jour ce titre à la place de l'ancien `<h1>` à chaque
+  navigation. `.nav-buttons` (Précédent/Suivant) reste sous la vidéo,
+  à sa place attendue - jamais remonté dans la barre.
+- **`<h1>` retiré aussi pour PDF et EPUB**, sur une question distincte
+  de Gautier : le titre du livre n'a pas sa place dans la barre comme
+  pour vidéo/audio (un livre ne change jamais de titre d'une page à
+  l'autre, contrairement à une leçon vidéo) - mais le fil d'Ariane
+  juste au-dessus (`.back`, "← {{ media['item_title'] }}") porte déjà
+  ce même titre : le garder en plus en `<h1>` le répétait à deux
+  lignes d'intervalle, pour aucune information supplémentaire. Retiré
+  purement et simplement, sans rejoindre la barre.
+- **Colonne latérale et zone de contenu**, vérifiées après ce
+  déplacement : leur position/hauteur (voir "Hauteur et position des
+  colonnes latérales" plus haut) est calculée en JS à partir de la
+  position réelle du lecteur/de `#reader-viewport`, jamais d'une
+  valeur figée liée à la barre - rien à changer, la remontée du haut
+  de page (disparition du `<h1>`) se répercute automatiquement, la
+  zone de contenu gagne même en hauteur disponible pour PDF/EPUB.
+- **Résidu mesuré, sans rapport avec cette demande** : la barre
+  PDF/EPUB fait 3px de plus en hauteur que celle de vidéo/audio (42px
+  contre 39px), à cause du champ numérique de page/chapitre (`<input>`,
+  26px) légèrement plus haut que les boutons (23px) - déjà là avant
+  cette tranche, non touché puisque le contenu de cette barre reste
+  inchangé pour PDF/EPUB.
+
+Vérifié par mesure (`getBoundingClientRect`, fenêtre 1440px) plutôt
+qu'à l'œil seul : les quatre barres commencent au même `toolbar_top`
+(56px), et la colonne latérale/le contenu de chaque lecteur restent
+alignés sur le haut du lecteur lui-même, pas sur la barre.
+
+`pytest tests/` (300 tests) au vert.
+
 ## Méthode — backlog
 
 Avant de commencer une tranche, relire le backlog et signaler les
