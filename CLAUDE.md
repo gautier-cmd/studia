@@ -279,11 +279,14 @@ coexistent, aucun n'est un repli pour l'autre.
 
 ### Bloc-notes (une note par item)
 
-Un seul champ texte par item, affiché à deux endroits qui pointent
-vers la même donnée : en bas de la fiche (/item/<id>, pour tous les
-types) et en bas du lecteur vidéo (/watch/<media_id>, pour les
-courses). Modifier la note d'un côté la met à jour de l'autre au
-prochain chargement de page.
+Un seul champ texte par item, édité et affiché dans le même panneau
+flottant partagé (`templates/_note_panel.html`, `_note_widget.html`)
+depuis la fiche de l'item et depuis chacun des quatre lecteurs - un
+bouton "Notes" l'ouvre à chaque endroit, jamais une variante par
+écran. Modifier la note à un endroit la met à jour partout ailleurs au
+prochain chargement de page, puisque c'est la même donnée et le même
+composant (détail des lecteurs : "Panneau de notes flottant : lecteur
+vidéo" ; détail de la fiche : "Notes sur la fiche d'item", plus bas).
 
 - Enregistrement automatique après une pause de frappe (900 ms), et
   immédiatement si l'onglet est masqué ou fermé (navigator.sendBeacon,
@@ -627,9 +630,10 @@ Nouvelle structure : hero horizontal (couverture ~30-35% à gauche ;
 badge, titre, auteur/formateur, durée, nombre de médias, chapitres,
 année, boutons d'action à droite — `extract_hero_fields()` dans
 studia.py, qui choisit auteur/année parmi la présentation locale puis
-les métadonnées de livre validées), suivi de trois onglets À propos /
+les métadonnées de livre validées), suivi des onglets À propos /
 Programme / Ressources (bascule en JS pur, `data-tab-target` /
-`data-panel`, pas de bibliothèque).
+`data-panel`, pas de bibliothèque) — un quatrième, Notes, conditionnel,
+s'y ajoute depuis (voir "Notes sur la fiche d'item" plus bas).
 
 Cinq corrections demandées par Gautier :
 
@@ -2045,9 +2049,12 @@ de `/read`, et inversement.
   `player_context.kind == 'video'` dans `_note_widget.html`,
   distincte de la branche générique (devenue le repli pour l'audio
   seul, qui garde "Repère" - hors périmètre de cette tranche).
-- **Hors périmètre, explicitement.** Le bloc de notes de la fiche
-  d'item (`item_detail.html`) - tranche à part. Le lecteur audio
-  (`/listen`) garde son bloc de notes fixe pour l'instant.
+- **Lecteur audio (`/listen`), même commit.** `audio_player.html`
+  adopte le même panneau flottant que la vidéo, apporté par ce même
+  commit (`a386396`) - pas une tranche séparée.
+- **Hors périmètre, explicitement, à ce stade.** Le bloc de notes de
+  la fiche d'item (`item_detail.html`) - tranche à part, faite depuis
+  (voir "Notes sur la fiche d'item" plus bas).
 
 Vérifié dans le navigateur : panneau ouvert/fermé sur `/watch`,
 glissé et redimensionné (position/taille enregistrées, retrouvées sur
@@ -2518,6 +2525,76 @@ alignés sur le haut du lecteur lui-même, pas sur la barre.
 
 `pytest tests/` (300 tests) au vert.
 
+### Notes sur la fiche d'item (fait)
+
+Termine l'unification commencée sur les quatre lecteurs : la fiche
+(`item_detail.html`) n'a plus son propre bloc de notes intégré en bas
+de page, pour les trois types de contenu (formation, livre,
+audiobook) - remplacé par le même panneau flottant partagé
+(`templates/_note_panel.html`) que les lecteurs, jamais une variante.
+`render_note_panel_markup(item['id'], note_text, note_updated_at)`
+pose le `<dialog>` (sans `player_context` : la fiche n'a pas de
+position à marquer dans un média, contrairement à un lecteur - la
+branche "Insérer un repère" de `_note_widget.html` ne s'affiche donc
+pas ici) ; `render_note_panel_script(...)` reçoit les mêmes quatre
+préférences (`note_panel_left/top/width/height`) que les lecteurs,
+lues par `fetch_reading_preferences` dans la route `/item/<id>` - un
+seul réglage d'application, jamais par item.
+
+- **Bouton "Notes" dans la rangée d'actions du hero**, à côté de "Tout
+  recommencer" - `<div class="hero-actions">` existe désormais
+  systématiquement, même sans média lisible (livre dans un format que
+  Studia ne sait pas encore ouvrir) : c'est le seul moyen d'écrire une
+  première note, elle ne peut donc jamais être absente. Porte
+  `id="reader-toggle-notes"`, l'identifiant que
+  `render_note_panel_script` cherche pour câbler l'ouverture/
+  fermeture - seule sa présentation change (`.btn-secondary`, comme
+  "Tout recommencer", plutôt que `.btn-mini` dans un
+  `.reader-toolbar`), jamais le mécanisme.
+- **Indicateur discret** quand une note existe déjà pour l'item : un
+  simple point plein (`.notes-indicator`, 6px, couleur d'accent)
+  accolé au libellé du bouton. Posé par une seule condition Jinja,
+  évaluée une fois en tête du hero
+  (`{% set has_note = note_text and note_text.strip() %}`) et
+  réutilisée telle quelle pour l'indicateur, le bouton de l'onglet et
+  son panneau ci-dessous - jamais recalculée trois fois. Aucune donnée
+  inventée au-delà de "une note existe" : pas de compte, pas d'aperçu.
+- **Onglet "Notes", après "Ressources"** - gouverné par cette même
+  variable `has_note`, à la fois sur son bouton
+  (`data-tab-target="notes"`) et sur son panneau (`data-panel="notes"`) :
+  absent des deux tant que la note est vide, jamais un onglet vide
+  affiché à la place (contrairement à l'onglet Ressources, toujours
+  présent, qui affiche "Aucune ressource." en son absence).
+- **Contenu de l'onglet : aperçu seul, jamais d'édition.** Un
+  `<div id="notes-tab-preview" class="note-preview">` rempli au
+  chargement de la page par `window.renderNoteMarkdown(...)` - le
+  moteur Markdown de `_note_widget.html` (`renderMarkdown`), exposé sur
+  `window` pour cette seule raison plutôt que réimplémenté une seconde
+  fois. Un repère (horodaté pour vidéo/audio, page pour un PDF,
+  chapitre pour un EPUB) y reste un lien cliquable, rendu par ce même
+  moteur : cliqué, il ouvre directement le lecteur correspondant
+  (`/watch`, `/listen`, `/read` ou `/read-epub`) à la position, la page
+  ou le chapitre visés.
+- **Bouton d'impression propre à l'onglet** (`id="notes-tab-print"`),
+  qui se contente d'appeler `window.print()` - le mécanisme
+  d'impression est le même que celui du panneau (déjà câblé par
+  `_note_widget.html`, sur l'unique instance de `render_note` de la
+  page, celle du panneau) : la page imprimée montre le titre de
+  l'item, la date du jour et la note rendue en Markdown
+  (`render_print_block`, `#print-only`, `beforeprint`) - rien de
+  propre à l'onglet, aucun second mécanisme d'impression.
+
+Vérifié dans le navigateur, sur les trois types, avec et sans note :
+bouton "Notes" toujours atteignable (y compris un livre sans bouton
+principal) ; indicateur et onglet apparaissant après l'écriture d'une
+première note depuis la fiche, disparaissant tous les deux si la note
+est vidée ; panneau ouvert depuis la fiche identique en tout point à
+celui des lecteurs (glisser-déposer, poignée de redimensionnement,
+position/taille mémorisées). Le menu ⋮ du hero n'a pas été touché,
+toujours ses trois entrées.
+
+`pytest tests/` (307 tests) au vert.
+
 ## Méthode — backlog
 
 Avant de commencer une tranche, relire le backlog et signaler les
@@ -2528,6 +2605,15 @@ backlog plus difficile à corriger sans le signaler d'abord.
 
 ## Backlog (ne pas traiter sans demande explicite)
 
+- La liste de fichiers en tête de "### État actuel" ne reflète plus ce
+  qui est réellement présent : la moitié environ des gabarits de
+  `templates/` n'y figurent pas (9 sur 18 constatés), dont
+  `templates/_note_panel.html`, cité par la section "Notes sur la
+  fiche d'item" ci-dessus sans jamais y avoir été ajouté ; un fichier
+  Python racine manque (`epub_book.py`) ; deux fichiers de test
+  manquent (`test_epub.py`, `test_progress.py`) ; le nombre de tests
+  annoncé (70) date de très loin (307 aujourd'hui). À reprendre en une
+  passe séparée, pas au fil des tranches suivantes.
 - `fetch_item_author()` (grille) relit et reparse la page de
   présentation de chaque item à chaque chargement de `/`, sans cache
   ni champ stocké. Mesuré : 4,45 ms/item. Extrapolé linéairement (pas
