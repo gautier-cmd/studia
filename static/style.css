@@ -1865,6 +1865,11 @@ audio {
     background: var(--color-border);
     border-radius: var(--radius-md);
     overflow-y: auto;
+    /* Une page PDF zoomée au-delà de la largeur du cadre déborde et se
+       lit par défilement horizontal (voir .reader-page ci-dessous),
+       plutôt que d'être réduite - sans effet pour l'EPUB, qui ne
+       déborde jamais horizontalement (le texte se recompose). */
+    overflow-x: auto;
 }
 
 /* .reader-page est un enfant de #reader-pages, pas de .reader-viewport :
@@ -1874,7 +1879,13 @@ audio {
 #reader-pages {
     display: flex;
     flex-direction: column;
-    align-items: center;
+    /* "safe" (pas juste "center") : une page plus large que le cadre à
+       fort zoom doit rester atteignable en entier par le défilement
+       horizontal. Un centrage simple coupe alors une moitié de la page
+       hors d'atteinte (repérable des deux extrêmes du défilement, ni
+       l'un ni l'autre ne montrant le bord gauche) - "safe" bascule sur
+       un alignement au début dès que le centrage perdrait du contenu. */
+    align-items: safe center;
     gap: var(--space-20);
 }
 
@@ -1882,13 +1893,17 @@ audio {
     position: relative;
     background: #fff;
     box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
-    max-width: 100%;
+    /* Jamais de max-width: 100% ici (ni sur le canevas ci-dessous) : à
+       fort zoom, une page plus large que le cadre de lecture doit
+       déborder et se lire par défilement horizontal (comme n'importe
+       quel lecteur PDF), pas être réduite visuellement - une réduction
+       CSS désynchronise la couche de texte sélectionnable de PDF.js
+       (positionnée d'après le zoom réel, pas la taille réduite) du
+       rendu visible. Voir "Lecteur PDF" dans CLAUDE.md. */
 }
 
 .reader-page canvas {
     display: block;
-    max-width: 100%;
-    height: auto;
 }
 
 /* Couche de texte sélectionnable posée par PDF.js par-dessus le
