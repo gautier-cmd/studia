@@ -33,6 +33,8 @@
         <button type="button" class="toolbar-btn" data-md="code" title="Bloc de code">Code</button>
         {% if player_context and player_context.kind == 'book' %}
         <button type="button" class="toolbar-btn" id="insert-marker" title="Insérer la page courante">Insérer la page</button>
+        {% elif player_context and player_context.kind == 'epub' %}
+        <button type="button" class="toolbar-btn" id="insert-marker" title="Insérer le chapitre courant">Insérer le chapitre</button>
         {% elif player_context and player_context.kind == 'video' %}
         {# Même forme que "Insérer la page"/"Insérer le chapitre" - le
            lecteur vidéo passe au panneau flottant, ce bouton (déjà dans
@@ -76,12 +78,13 @@
     }
 
     // Un repère est une ligne "texte (/watch/id?t=secondes)",
-    // "texte (/listen/id?t=secondes)" ou "texte (/read/id?p=page)"
-    // selon le lecteur : le fragment entre parenthèses sert à
-    // repositionner le lecteur, ce n'est pas une information à
-    // montrer telle quelle (liste, aperçu, impression) — seule la
-    // zone de saisie, en texte brut, le laisse forcément visible.
-    var MARKER_PATTERN = /^(.*)\((\/(?:watch|listen)\/\d+\?t=\d+|\/read\/\d+\?p=\d+)\)\s*$/;
+    // "texte (/listen/id?t=secondes)", "texte (/read/id?p=page)" ou
+    // "texte (/read-epub/id?c=chapitre)" selon le lecteur : le
+    // fragment entre parenthèses sert à repositionner le lecteur, ce
+    // n'est pas une information à montrer telle quelle (liste,
+    // aperçu, impression) — seule la zone de saisie, en texte brut,
+    // le laisse forcément visible.
+    var MARKER_PATTERN = /^(.*)\((\/(?:watch|listen)\/\d+\?t=\d+|\/read\/\d+\?p=\d+|\/read-epub\/\d+\?c=\d+)\)\s*$/;
 
     function markerLineRegex() {
         return new RegExp(MARKER_PATTERN.source, 'gm');
@@ -601,6 +604,18 @@
         // du lecteur, inaccessible d'ici.
         var pageNumber = document.getElementById('reader-page-input').value;
         var marker = 'Page ' + pageNumber + ' (/read/{{ player_context.media_id }}?p=' + pageNumber + ')\n';
+        {% elif player_context.kind == 'epub' %}
+        // Un chapitre n'a pas de coordonnée comme un numéro de page :
+        // son titre dit ce qu'on a marqué, un numéro seul seul non
+        // (décidé avec Gautier). reader-page-input tient le numéro du
+        // chapitre affiché à jour (updateChapterFields) ; son propre
+        // titre (déjà replié sur "Chapitre N" côté serveur si la table
+        // des matières n'en fournit pas, voir epub_book.py) est porté
+        // par ce même champ via data-chapter-title.
+        var chapterInput = document.getElementById('reader-page-input');
+        var chapterNumber = chapterInput.value;
+        var chapterTitle = chapterInput.dataset.chapterTitle || ('Chapitre ' + chapterNumber);
+        var marker = chapterTitle + ' (/read-epub/{{ player_context.media_id }}?c=' + chapterNumber + ')\n';
         {% else %}
         var player = document.getElementById('player');
         var seconds = Math.floor(player.currentTime);

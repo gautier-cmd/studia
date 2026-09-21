@@ -20,6 +20,7 @@ from library_index import NBSP, connect_database, format_duration, now_iso
 from presentation import parse_presentation
 from book_metadata import default_query, find_isbn, search_candidates
 from covers import cover_cache_dir, cover_cache_path
+from epub_book import EpubFormatError, parse_table_of_contents, render_chapter, render_stylesheet, read_asset
 
 # Le module mimetypes ne connaît pas .m4b par défaut (contrairement à
 # .m4a, déjà mappé sur audio/mp4) : sans cet ajout, /media/<id>/file
@@ -43,10 +44,10 @@ mimetypes.add_type("video/3gpp2", ".3g2")
 
 BOOK_ITEM_TYPES = ("book", "audiobook")
 
-# Extension du seul format de livre lisible par le lecteur PDF - un
+# Extensions de livre lisibles, chacune par son propre lecteur - un
 # item "book" peut contenir n'importe quelle extension de
-# BOOK_EXTENSIONS (EPUB, MOBI, CBZ...), pas seulement du PDF.
-READABLE_BOOK_EXTENSION = ".pdf"
+# BOOK_EXTENSIONS (EPUB, MOBI, CBZ...), pas seulement PDF/EPUB.
+READABLE_BOOK_EXTENSIONS = (".pdf", ".epub")
 
 # Type de média suivi par la progression selon le type d'item - un
 # document n'en a aucun pour l'instant (pas de lecteur).
@@ -56,15 +57,25 @@ TRACKED_PROGRESS_MEDIA_TYPE = {
     "book": "book",
 }
 
+# Route du lecteur d'un livre selon son extension - un item "book" a
+# un seul média principal (voir classify_file), donc une seule
+# extension à trancher ici. Complète HERO_CTA_ENDPOINTS pour le type
+# "book" (resolve_hero_cta), qui ne peut pas décider par le seul
+# item_type puisqu'un livre a maintenant deux lecteurs possibles.
+BOOK_READER_ENDPOINTS = {
+    ".pdf": "read_book",
+    ".epub": "read_epub_book",
+}
+
 
 def is_readable_book_media(media_type: str, extension: str) -> bool:
-    """Un média 'book' n'est lisible par /read que s'il s'agit d'un
-    PDF - un item livre peut aussi bien contenir un EPUB ou un MOBI
-    (voir BOOK_EXTENSIONS, offlineu_core.py), que le lecteur ne sait
-    pas encore ouvrir. Vrai sans condition pour tout autre type
-    (vidéo, audio), qui n'est jamais concerné par cette restriction."""
+    """Un média 'book' n'est lisible que s'il s'agit d'un PDF ou d'un
+    EPUB - un item livre peut aussi bien contenir un MOBI ou un CBZ
+    (voir BOOK_EXTENSIONS, offlineu_core.py), qu'aucun lecteur ne sait
+    encore ouvrir. Vrai sans condition pour tout autre type (vidéo,
+    audio), qui n'est jamais concerné par cette restriction."""
 
-    return media_type != "book" or extension == READABLE_BOOK_EXTENSION
+    return media_type != "book" or extension in READABLE_BOOK_EXTENSIONS
 
 BADGE_LABELS = {
     "course": "FORMATION",
@@ -257,19 +268,21 @@ def build_meta_line(*segments: str | None) -> str:
 
 
 def fetch_playable_media(conn, media_id: int):
-    """Media jouable (vidéo, audio, ou livre PDF), avec le chemin de
-    bibliothèque et le titre de son item.
+    """Media jouable (vidéo, audio, ou livre PDF/EPUB), avec le chemin
+    de bibliothèque et le titre de son item.
 
     None si l'id n'existe pas, ou si c'est un format sans lecteur (un
-    document, ou un livre qui n'est pas un PDF - EPUB, MOBI... voir
+    document, ou un livre ni PDF ni EPUB - MOBI, CBZ... voir
     is_readable_book_media) : cette fonction sert de garde commune à
-    /watch, /listen, /read, au service de fichier et à l'écriture de
-    la progression. Chaque route vérifie en plus son propre
-    media_type (une vidéo ne s'ouvre pas via /listen, et inversement).
+    /watch, /listen, /read, /read-epub, au service de fichier et à
+    l'écriture de la progression. Chaque route vérifie en plus son
+    propre media_type/extension (une vidéo ne s'ouvre pas via /listen,
+    un EPUB ne s'ouvre pas via /read, et inversement).
     """
 
+    placeholders = ", ".join("?" for _ in READABLE_BOOK_EXTENSIONS)
     return conn.execute(
-        """
+        f"""
         SELECT
             media.id,
             media.item_id,
@@ -285,10 +298,10 @@ def fetch_playable_media(conn, media_id: int):
         WHERE media.id = ?
           AND (
             media.media_type IN ('video', 'audio')
-            OR (media.media_type = 'book' AND media.extension = ?)
+            OR (media.media_type = 'book' AND media.extension IN ({placeholders}))
           )
         """,
-        (media_id, READABLE_BOOK_EXTENSION),
+        (media_id, *READABLE_BOOK_EXTENSIONS),
     ).fetchone()
 
 
@@ -493,22 +506,26 @@ def resolve_resume_page(progress_row) -> int | None:
 READING_MODES = ("scroll", "paginated")
 DEFAULT_READING_MODE = "scroll"
 
+EPUB_READING_MODES = ("scroll", "chapter")
+DEFAULT_EPUB_READING_MODE = "scroll"
+
 
 def fetch_reading_preferences(conn) -> dict:
-    """Réglages du lecteur PDF (mode de défilement, niveau de zoom,
-    position/taille du panneau de notes) - un seul réglage pour toute
-    l'application, jamais par livre (décidé avec Gautier). Valeurs par
-    défaut si aucune ligne n'existe encore (avant le premier réglage
-    explicite), pas d'erreur. Les quatre champs du panneau sont NULL
-    tant qu'il n'a jamais été déplacé/redimensionné : le JS calcule
-    alors une position/taille par défaut plutôt que de stocker cette
-    valeur calculée."""
+    """Réglages des lecteurs PDF et EPUB (mode de défilement, niveau de
+    zoom, taille du texte EPUB, position/taille du panneau de notes) -
+    un seul réglage pour toute l'application, jamais par livre (décidé
+    avec Gautier). Valeurs par défaut si aucune ligne n'existe encore
+    (avant le premier réglage explicite), pas d'erreur. Les quatre
+    champs du panneau et reading_text_scale sont NULL tant qu'ils n'ont
+    jamais été réglés : le JS calcule alors une valeur par défaut
+    plutôt que de stocker cette valeur calculée."""
 
     row = conn.execute(
         """
         SELECT reading_mode, reading_zoom,
                note_panel_left, note_panel_top,
-               note_panel_width, note_panel_height
+               note_panel_width, note_panel_height,
+               reading_text_scale, epub_reading_mode
         FROM preferences WHERE user_id = ?
         """,
         (LOCAL_USER_ID,),
@@ -522,6 +539,8 @@ def fetch_reading_preferences(conn) -> dict:
             "note_panel_top": None,
             "note_panel_width": None,
             "note_panel_height": None,
+            "reading_text_scale": None,
+            "epub_reading_mode": DEFAULT_EPUB_READING_MODE,
         }
 
     return {
@@ -531,6 +550,8 @@ def fetch_reading_preferences(conn) -> dict:
         "note_panel_top": row["note_panel_top"],
         "note_panel_width": row["note_panel_width"],
         "note_panel_height": row["note_panel_height"],
+        "reading_text_scale": row["reading_text_scale"],
+        "epub_reading_mode": row["epub_reading_mode"],
     }
 
 
@@ -542,6 +563,8 @@ def save_reading_preferences(
     note_panel_top: float | None = None,
     note_panel_width: float | None = None,
     note_panel_height: float | None = None,
+    reading_text_scale: float | None = None,
+    epub_reading_mode: str | None = None,
 ) -> None:
     """Met à jour uniquement les réglages fournis par l'appelant - une
     valeur non fournie garde celle déjà en base plutôt que d'être
@@ -568,24 +591,40 @@ def save_reading_preferences(
         if note_panel_height is not None
         else current["note_panel_height"]
     )
+    text_scale = (
+        reading_text_scale
+        if reading_text_scale is not None
+        else current["reading_text_scale"]
+    )
+    epub_mode = (
+        epub_reading_mode
+        if epub_reading_mode is not None
+        else current["epub_reading_mode"]
+    )
 
     conn.execute(
         """
         INSERT INTO preferences (
             user_id, reading_mode, reading_zoom,
             note_panel_left, note_panel_top,
-            note_panel_width, note_panel_height
+            note_panel_width, note_panel_height,
+            reading_text_scale, epub_reading_mode
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             reading_mode = excluded.reading_mode,
             reading_zoom = excluded.reading_zoom,
             note_panel_left = excluded.note_panel_left,
             note_panel_top = excluded.note_panel_top,
             note_panel_width = excluded.note_panel_width,
-            note_panel_height = excluded.note_panel_height
+            note_panel_height = excluded.note_panel_height,
+            reading_text_scale = excluded.reading_text_scale,
+            epub_reading_mode = excluded.epub_reading_mode
         """,
-        (LOCAL_USER_ID, mode, zoom, panel_left, panel_top, panel_width, panel_height),
+        (
+            LOCAL_USER_ID, mode, zoom, panel_left, panel_top,
+            panel_width, panel_height, text_scale, epub_mode,
+        ),
     )
     conn.commit()
 
@@ -725,6 +764,7 @@ def build_progress_summary_line(
     duration_seconds: float | None,
     page_number: int | None = None,
     page_count: int | None = None,
+    book_extension: str | None = None,
 ) -> str:
     """Ligne affichée sous la barre de progression du hero (fiche) -
     le pourcentage vient toujours de compute_item_progress_percent,
@@ -734,11 +774,16 @@ def build_progress_summary_line(
     dialogue "Tout recommencer" (0/1 singulier, 2+ pluriel). Audiobook :
     "42 % · 1 h 12 sur 3 h 05" - un seul fichier n'a pas de vidéos à
     compter, la position et la durée disent la même chose plus
-    directement. Livre : "42 % · page 128 sur 305" - la page courante,
-    pas un décompte de pages lues : page_number est déjà une position,
-    contrairement à completed_count qui compte des vidéos terminées.
-    Appelant responsable de ne pas invoquer cette branche sans
-    page_count connu (voir fetch_item_media_progress).
+    directement. Livre PDF : "42 % · page 128 sur 305" - la page
+    courante, pas un décompte de pages lues. Livre EPUB : "42 % ·
+    chapitre 9 sur 88" - même principe, mais un EPUB n'a pas de pages
+    (le texte se recompose selon la fenêtre et la taille de police,
+    voir CLAUDE.md) : page_number/page_count contiennent alors un
+    index et un total de chapitres, pas des pages - seul le mot change.
+    page_number est déjà une position dans les deux cas, contrairement
+    à completed_count qui compte des vidéos terminées. Appelant
+    responsable de ne pas invoquer cette branche sans page_count connu
+    (voir fetch_item_media_progress).
     """
 
     if item_type == "audiobook":
@@ -748,7 +793,8 @@ def build_progress_summary_line(
         )
 
     if item_type == "book":
-        return f"{percent}{NBSP}% · page{NBSP}{page_number} sur {page_count}"
+        unit = "chapitre" if book_extension == ".epub" else "page"
+        return f"{percent}{NBSP}% · {unit}{NBSP}{page_number} sur {page_count}"
 
     plural = completed_count >= 2
     return (
@@ -809,8 +855,9 @@ def fetch_item_media_progress(conn, item_id: int, item_type: str) -> dict:
         # Gautier). Le livre reste lisible normalement (voir
         # save_book_progress) : seule la fiche/carte n'a rien à
         # montrer, comme s'il n'avait jamais été ouvert.
+        placeholders = ", ".join("?" for _ in READABLE_BOOK_EXTENSIONS)
         row = conn.execute(
-            """
+            f"""
             SELECT
                 progress.completed IS NOT NULL AS has_progress,
                 COALESCE(progress.completed, 0) AS completed,
@@ -820,10 +867,10 @@ def fetch_item_media_progress(conn, item_id: int, item_type: str) -> dict:
             LEFT JOIN progress
                 ON progress.media_id = media.id AND progress.user_id = ?
             WHERE media.item_id = ? AND media.media_type = 'book'
-              AND media.extension = ?
+              AND media.extension IN ({placeholders})
             LIMIT 1
             """,
-            (LOCAL_USER_ID, item_id, READABLE_BOOK_EXTENSION),
+            (LOCAL_USER_ID, item_id, *READABLE_BOOK_EXTENSIONS),
         ).fetchone()
 
         if row is None or row["page_count"] is None:
@@ -891,17 +938,26 @@ def fetch_media_progress_states(
 
     media_type est le type suivi pour cet item (voir
     TRACKED_PROGRESS_MEDIA_TYPE) ; None (document) renvoie un dict vide
-    sans requête. Pour 'book', restreint aux PDF (voir
-    is_readable_book_media) - un livre non lisible n'a de toute façon
-    jamais de ligne progress, faute de route pour en créer une.
+    sans requête. Pour 'book', restreint aux formats lisibles - PDF et
+    EPUB (voir is_readable_book_media) - un livre non lisible n'a de
+    toute façon jamais de ligne progress, faute de route pour en créer
+    une.
     """
 
     if media_type is None:
         return {}
 
-    extension_guard = (
-        "AND media.extension = :extension" if media_type == "book" else ""
-    )
+    params: dict[str, object] = {
+        "user_id": LOCAL_USER_ID,
+        "item_id": item_id,
+        "media_type": media_type,
+    }
+    extension_guard = ""
+    if media_type == "book":
+        ext_keys = [f"extension{i}" for i in range(len(READABLE_BOOK_EXTENSIONS))]
+        extension_guard = f"AND media.extension IN ({', '.join(':' + k for k in ext_keys)})"
+        params.update(zip(ext_keys, READABLE_BOOK_EXTENSIONS))
+
     rows = conn.execute(
         f"""
         SELECT media.id, progress.completed
@@ -911,12 +967,7 @@ def fetch_media_progress_states(
         WHERE media.item_id = :item_id AND media.media_type = :media_type
         {extension_guard}
         """,
-        {
-            "user_id": LOCAL_USER_ID,
-            "item_id": item_id,
-            "media_type": media_type,
-            "extension": READABLE_BOOK_EXTENSION,
-        },
+        params,
     ).fetchall()
 
     return {
@@ -933,18 +984,27 @@ HERO_CTA_LABELS = {
 
 HERO_CTA_ENDPOINTS = {
     "audiobook": "listen_audio",
-    "book": "read_book",
 }
 
 
-def resolve_hero_cta(item_type: str, progress_status: str) -> tuple[str, str]:
+def resolve_hero_cta(
+    item_type: str, progress_status: str, book_extension: str | None = None
+) -> tuple[str, str]:
     """Verbe et endpoint du bouton principal du hero.
 
     Le verbe est neutre, identique pour tous les types
     (Commencer/Continuer/Revoir) - "Regarder", "Écouter" et "Reprendre"
-    ne sont plus utilisés. Seul l'endpoint reste choisi par type."""
+    ne sont plus utilisés. Pour un livre, l'endpoint ne peut plus se
+    décider par le seul item_type "book" : un livre a maintenant deux
+    lecteurs possibles selon son extension (voir
+    BOOK_READER_ENDPOINTS) - PDF par défaut si l'extension est
+    inconnue/absente, pour ne rien changer au comportement déjà en
+    place avant l'EPUB."""
 
-    endpoint = HERO_CTA_ENDPOINTS.get(item_type, "watch_video")
+    if item_type == "book":
+        endpoint = BOOK_READER_ENDPOINTS.get(book_extension, "read_book")
+    else:
+        endpoint = HERO_CTA_ENDPOINTS.get(item_type, "watch_video")
 
     return HERO_CTA_LABELS[progress_status], endpoint
 
@@ -1527,6 +1587,12 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
     app.config["LIBRARY_ROOT"] = library_root.resolve()
     app.config["DB_PATH"] = db_path
     app.config["COVER_CACHE_DIR"] = cover_cache_dir(db_path)
+    # Sans ça, Jinja garde les gabarits compilés en mémoire et ignore
+    # leurs modifications tant que le serveur de développement n'est pas
+    # redémarré à la main - source probable d'un correctif qui « ne
+    # tient pas » alors qu'il est bien dans le fichier (constaté
+    # plusieurs fois pendant cette tranche).
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
 
     @app.route("/")
     def library_grid():
@@ -1671,23 +1737,40 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                     if audio_progress is not None:
                         audiobook_position_seconds = audio_progress["position_seconds"]
 
-            # Même chose côté livre, pour "page N sur M" (résumé et
-            # boîte "Tout recommencer") - page_count reste None tant
-            # que pdfinfo ne l'a pas lu ou pour un livre non-PDF.
+            # Même chose côté livre, pour "page N sur M"/"chapitre N sur
+            # M" (résumé et boîte "Tout recommencer") - page_count
+            # reste None tant qu'il n'a pas été sondé, ou pour un livre
+            # ni PDF ni EPUB.
             book_page_number = None
             book_page_count = None
+            book_extension = None
+            # Un EPUB sondé mais sans table des matières exploitable
+            # (EPUB3 sans repli NCX, voir epub_book.py) : jamais lisible,
+            # contrairement à un PDF sans page_count connu (qui reste
+            # lisible normalement, seule sa progression est absente) -
+            # traité plus bas comme un format non lisible, message
+            # existant plutôt qu'un nouveau.
+            book_epub_confirmed_unreadable = False
             if item["item_type"] == "book":
+                placeholders = ", ".join("?" for _ in READABLE_BOOK_EXTENSIONS)
                 book_media = conn.execute(
-                    "SELECT id, page_count FROM media WHERE item_id = ? "
-                    "AND media_type = 'book' AND extension = ? "
+                    f"SELECT id, page_count, extension, chapters_probed_at "
+                    "FROM media WHERE item_id = ? "
+                    f"AND media_type = 'book' AND extension IN ({placeholders}) "
                     "ORDER BY sort_order LIMIT 1",
-                    (item_id, READABLE_BOOK_EXTENSION),
+                    (item_id, *READABLE_BOOK_EXTENSIONS),
                 ).fetchone()
                 if book_media is not None:
                     book_page_count = book_media["page_count"]
+                    book_extension = book_media["extension"]
                     book_progress = fetch_media_progress(conn, book_media["id"])
                     if book_progress is not None:
                         book_page_number = book_progress["page_number"]
+                    book_epub_confirmed_unreadable = (
+                        book_extension == ".epub"
+                        and book_media["page_count"] is None
+                        and book_media["chapters_probed_at"] is not None
+                    )
 
             # Même fonction que la carte de la grille pour le
             # pourcentage du hero - jamais un second calcul.
@@ -1707,6 +1790,13 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             m["id"] for m in media_rows
             if m["media_type"] == tracked_media_type
             and is_readable_book_media(m["media_type"], m["extension"])
+            # Un EPUB confirmé sans table des matières exploitable
+            # n'a en pratique aucun lecteur capable de l'ouvrir, même
+            # si son extension seule le laisserait passer ci-dessus
+            # (voir book_epub_confirmed_unreadable) : exclu du hero
+            # comme n'importe quel format non lisible, message
+            # existant plutôt qu'une page cassée au clic.
+            and not (book_epub_confirmed_unreadable and m["media_type"] == "book")
         ]
         completed_ids = {
             media_id
@@ -1730,7 +1820,7 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                 ]
             )
         watch_label, watch_endpoint = resolve_hero_cta(
-            item["item_type"], progress_status
+            item["item_type"], progress_status, book_extension
         )
         # Pour le texte de la boîte de dialogue "Tout recommencer" (une
         # formation seulement - un audiobook n'a qu'un fichier, rien à
@@ -1761,6 +1851,7 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                 total_duration,
                 page_number=book_page_number,
                 page_count=book_page_count,
+                book_extension=book_extension,
             )
 
         presentation_resource = next(
@@ -1837,6 +1928,7 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             audiobook_position_seconds=audiobook_position_seconds,
             book_page_number=book_page_number,
             book_page_count=book_page_count,
+            book_extension=book_extension,
             progress_percent=progress_percent,
             progress_summary_line=progress_summary_line,
             progress_status=progress_status,
@@ -1900,15 +1992,15 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             tracked_media_type = TRACKED_PROGRESS_MEDIA_TYPE.get(item["item_type"])
             first_media = None
             if tracked_media_type:
-                extension_guard = (
-                    "AND extension = ?" if tracked_media_type == "book" else ""
-                )
+                extension_guard = ""
                 params = [item_id, tracked_media_type]
                 if tracked_media_type == "book":
-                    params.append(READABLE_BOOK_EXTENSION)
+                    placeholders = ", ".join("?" for _ in READABLE_BOOK_EXTENSIONS)
+                    extension_guard = f"AND extension IN ({placeholders})"
+                    params.extend(READABLE_BOOK_EXTENSIONS)
                 first_media = conn.execute(
                     f"""
-                    SELECT id FROM media
+                    SELECT id, extension FROM media
                     WHERE item_id = ? AND media_type = ? {extension_guard}
                     ORDER BY sort_order LIMIT 1
                     """,
@@ -1923,7 +2015,9 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         if tracked_media_type == "audio":
             watch_endpoint = "listen_audio"
         elif tracked_media_type == "book":
-            watch_endpoint = "read_book"
+            watch_endpoint = BOOK_READER_ENDPOINTS.get(
+                first_media["extension"], "read_book"
+            )
         else:
             watch_endpoint = "watch_video"
 
@@ -2224,7 +2318,11 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         try:
             media = fetch_playable_media(conn, media_id)
 
-            if media is None or media["media_type"] != "book":
+            if (
+                media is None
+                or media["media_type"] != "book"
+                or media["extension"] != ".pdf"
+            ):
                 abort(404)
 
             stored_progress = fetch_media_progress(conn, media_id)
@@ -2274,6 +2372,181 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
             },
         )
 
+    @app.route("/read-epub/<int:media_id>")
+    def read_epub_book(media_id: int):
+        conn = connect_database(app.config["DB_PATH"])
+
+        try:
+            media = fetch_playable_media(conn, media_id)
+
+            if (
+                media is None
+                or media["media_type"] != "book"
+                or media["extension"] != ".epub"
+            ):
+                abort(404)
+
+            stored_progress = fetch_media_progress(conn, media_id)
+            preferences = fetch_reading_preferences(conn)
+            note = fetch_note(conn, media["library_path"])
+        finally:
+            conn.close()
+
+        filename = media["relative_path"].rsplit("/", 1)[-1]
+        book_title = clean_file_title(filename)
+
+        file_path = (
+            app.config["LIBRARY_ROOT"] / media["library_path"] / media["relative_path"]
+        )
+
+        try:
+            toc = parse_table_of_contents(file_path)
+        except EpubFormatError:
+            # EPUB3 sans repli NCX, ou fichier corrompu (voir
+            # epub_book.py) : pas de table des matières, donc aucun
+            # lecteur possible - jamais une page cassée, ce même
+            # message plutôt qu'une erreur technique. En pratique,
+            # cette route ne devrait pas être atteinte pour ce cas via
+            # le hero (voir item_detail, book_epub_confirmed_unreadable),
+            # mais reste sûre si elle l'est quand même (lien direct,
+            # ancien signet...).
+            return render_template(
+                "epub_reader.html",
+                media=media,
+                book_title=book_title,
+                format_error=True,
+            )
+
+        chapter_count = len(toc)
+
+        # Même règle que ?p= sur /read : un repère explicite (cliqué
+        # depuis la note) l'emporte toujours sur la reprise
+        # automatique, sans pour autant écraser la position enregistrée
+        # tant que l'utilisateur n'a pas vraiment lu depuis là (voir
+        # epub_reader.html, lastSavedChapter).
+        requested_chapter = request.args.get("c", type=int)
+        opened_at_marker = requested_chapter is not None
+        if opened_at_marker:
+            resume_chapter = requested_chapter
+        else:
+            # Un livre terminé repart du premier chapitre, comme un
+            # livre PDF repart de la première page (même fonction,
+            # adaptée aux chapitres - voir CLAUDE.md).
+            resume_chapter = resolve_resume_page(stored_progress)
+
+        return render_template(
+            "epub_reader.html",
+            media=media,
+            format_error=False,
+            book_title=book_title,
+            toc=toc,
+            chapter_count=chapter_count,
+            resume_chapter=resume_chapter,
+            opened_at_marker=opened_at_marker,
+            reading_text_scale=preferences["reading_text_scale"],
+            epub_reading_mode=preferences["epub_reading_mode"],
+            note_panel_left=preferences["note_panel_left"],
+            note_panel_top=preferences["note_panel_top"],
+            note_panel_width=preferences["note_panel_width"],
+            note_panel_height=preferences["note_panel_height"],
+            note_text=note["text"] if note else "",
+            note_updated_at=note["updated_at"] if note else None,
+            player_context={
+                "kind": "epub",
+                "media_id": media_id,
+            },
+        )
+
+    @app.route("/media/<int:media_id>/epub-chapter/<int:chapter_index>")
+    def epub_chapter(media_id: int, chapter_index: int):
+        conn = connect_database(app.config["DB_PATH"])
+
+        try:
+            media = fetch_playable_media(conn, media_id)
+        finally:
+            conn.close()
+
+        if (
+            media is None
+            or media["media_type"] != "book"
+            or media["extension"] != ".epub"
+        ):
+            abort(404)
+
+        file_path = (
+            app.config["LIBRARY_ROOT"] / media["library_path"] / media["relative_path"]
+        )
+
+        try:
+            toc = parse_table_of_contents(file_path)
+        except EpubFormatError:
+            abort(404)
+
+        if chapter_index < 1 or chapter_index > len(toc):
+            abort(404)
+
+        def asset_url_for(internal_path: str) -> str:
+            return url_for(
+                "epub_asset", media_id=media_id, internal_path=internal_path
+            )
+
+        chapter = render_chapter(file_path, toc[chapter_index - 1]["href"], asset_url_for)
+
+        return render_template(
+            "epub_chapter.html",
+            chapter=chapter,
+            reading_text_scale=request.args.get("scale", type=float) or 1.0,
+        )
+
+    @app.route("/media/<int:media_id>/epub-asset/<path:internal_path>")
+    def epub_asset(media_id: int, internal_path: str):
+        conn = connect_database(app.config["DB_PATH"])
+
+        try:
+            media = fetch_playable_media(conn, media_id)
+        finally:
+            conn.close()
+
+        if (
+            media is None
+            or media["media_type"] != "book"
+            or media["extension"] != ".epub"
+        ):
+            abort(404)
+
+        file_path = (
+            app.config["LIBRARY_ROOT"] / media["library_path"] / media["relative_path"]
+        )
+
+        # internal_path vient de notre propre réécriture (voir
+        # epub_book.render_chapter/render_stylesheet), jamais du
+        # contenu de l'EPUB tel quel - mais toujours normalisé ici en
+        # plus (".." interdit) avant de lire dans l'archive, par
+        # prudence.
+        if ".." in internal_path.split("/"):
+            abort(404)
+
+        if internal_path.lower().endswith(".css"):
+            def asset_url_for(nested_path: str) -> str:
+                return url_for(
+                    "epub_asset", media_id=media_id, internal_path=nested_path
+                )
+
+            try:
+                css = render_stylesheet(file_path, internal_path, asset_url_for)
+            except KeyError:
+                abort(404)
+
+            return app.response_class(css, mimetype="text/css")
+
+        try:
+            data = read_asset(file_path, internal_path)
+        except KeyError:
+            abort(404)
+
+        mimetype, _ = mimetypes.guess_type(internal_path)
+        return app.response_class(data, mimetype=mimetype or "application/octet-stream")
+
     @app.route("/preferences", methods=["POST"])
     def save_preferences():
         # Réglages de l'application, jamais par livre (voir
@@ -2285,8 +2558,12 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
         note_panel_top = request.form.get("note_panel_top", type=float)
         note_panel_width = request.form.get("note_panel_width", type=float)
         note_panel_height = request.form.get("note_panel_height", type=float)
+        reading_text_scale = request.form.get("reading_text_scale", type=float)
+        epub_reading_mode = request.form.get("epub_reading_mode")
 
         if reading_mode is not None and reading_mode not in READING_MODES:
+            abort(400)
+        if epub_reading_mode is not None and epub_reading_mode not in EPUB_READING_MODES:
             abort(400)
 
         # Filet côté serveur : un panneau fermé pendant l'anti-rebond du
@@ -2314,6 +2591,8 @@ def create_app(library_root: Path, db_path: Path) -> Flask:
                 note_panel_top=note_panel_top,
                 note_panel_width=note_panel_width,
                 note_panel_height=note_panel_height,
+                reading_text_scale=reading_text_scale,
+                epub_reading_mode=epub_reading_mode,
             )
         finally:
             conn.close()

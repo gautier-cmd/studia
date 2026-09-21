@@ -20,8 +20,9 @@ from offlineu_core import (
     RESOURCE_EXTENSIONS,
     SUBTITLE_EXTENSIONS,
 )
+from epub_book import count_chapters as count_epub_chapters
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
 PROBE_TIMEOUT_SECONDS = 60
 PROBE_COMMIT_EVERY = 50
@@ -194,6 +195,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
             note_panel_top REAL,
             note_panel_width REAL,
             note_panel_height REAL,
+            reading_text_scale REAL,
+            epub_reading_mode TEXT NOT NULL DEFAULT 'scroll',
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         );
         """
@@ -251,6 +254,8 @@ def migrate_schema(conn: sqlite3.Connection) -> list[str]:
             ("note_panel_top", "REAL"),
             ("note_panel_width", "REAL"),
             ("note_panel_height", "REAL"),
+            ("reading_text_scale", "REAL"),
+            ("epub_reading_mode", "TEXT NOT NULL DEFAULT 'scroll'"),
         ],
     }
 
@@ -836,6 +841,7 @@ def probe_missing_media_info(
             i.library_path,
             m.relative_path,
             m.media_type,
+            m.extension,
             m.duration_seconds,
             m.chapters_probed_at,
             m.page_count
@@ -906,7 +912,19 @@ def probe_missing_media_info(
             )
 
         if row["media_type"] == "book" and row["page_count"] is None:
-            pages = probe_page_count(file_path)
+            # Même colonne pour les deux formats lisibles, un sens
+            # différent selon l'extension : nombre de pages pour un
+            # PDF (pdfinfo), nombre de chapitres - entrées de la table
+            # des matières, dédupliquées par fichier - pour un EPUB
+            # (voir epub_book.py). Toute autre extension de livre
+            # (MOBI...) n'a ni l'un ni l'autre : reste à None, comme
+            # aujourd'hui.
+            if row["extension"] == ".epub":
+                pages = count_epub_chapters(file_path)
+            elif row["extension"] == ".pdf":
+                pages = probe_page_count(file_path)
+            else:
+                pages = None
 
             if pages is not None:
                 pages_lues += 1
@@ -989,7 +1007,10 @@ def scan_library(
 
         if probe:
             if verbose:
-                print("Analyse des durées, chapitres et pages par ffprobe/pdfinfo…")
+                print(
+                    "Analyse des durées, chapitres et pages/chapitres "
+                    "de livre par ffprobe/pdfinfo…"
+                )
 
             durees_reussies, avec_chapitres, pages_lues, total = probe_missing_media_info(
                 conn, library_root, verbose
@@ -999,7 +1020,7 @@ def scan_library(
                 print(
                     f"Durées lues : {durees_reussies}/{total} — "
                     f"fichiers avec chapitres : {avec_chapitres} — "
-                    f"livres avec pages lues : {pages_lues}"
+                    f"livres avec pages/chapitres lus : {pages_lues}"
                 )
 
     finally:

@@ -1,0 +1,751 @@
+{% extends "_base.html" %}
+{% from "_note_widget.html" import render_print_block %}
+{% from "_note_panel.html" import render_notes_toggle, render_note_panel_markup, render_note_panel_script %}
+
+{% block title %}{{ book_title }} - Studia{% endblock %}
+
+{% block body_class %}page-player page-reader{% endblock %}
+
+{% block active_nav %}library{% endblock %}
+
+{% block content %}
+<div class="layout">
+    <div class="main">
+        <a class="back" href="{{ url_for('item_detail', item_id=media['item_id']) }}">← {{ media['item_title'] }}</a>
+        <h1>{{ book_title }}</h1>
+
+        {% if format_error %}
+        {# EPUB3 sans repli NCX, ou fichier corrompu (voir epub_book.py)
+           : aucun lecteur possible - même message, même esprit que le
+           format de livre non lisible (item_detail.html), jamais une
+           page cassée ni une erreur technique. #}
+        <p class="hint">Ce livre utilise un format que Studia ne sait pas encore lire.</p>
+        {% else %}
+
+        <div class="reader-toolbar">
+            <div class="reader-toolbar-group" role="group" aria-label="Mode d'affichage">
+                <button type="button" class="btn-mini" id="reader-mode-scroll" aria-pressed="false">Défilement</button>
+                <button type="button" class="btn-mini" id="reader-mode-chapter" aria-pressed="false">Chapitre par chapitre</button>
+            </div>
+
+            <div class="reader-toolbar-group reader-page-nav" role="group" aria-label="Navigation par chapitre">
+                <button type="button" class="btn-mini" id="reader-prev-page" aria-label="Chapitre précédent">←</button>
+                <label class="reader-page-field">
+                    <input type="number" id="reader-page-input" min="1" value="1" inputmode="numeric">
+                    <span>/ <span id="reader-page-total">—</span></span>
+                </label>
+                <button type="button" class="btn-mini" id="reader-next-page" aria-label="Chapitre suivant">→</button>
+            </div>
+
+            <div class="reader-toolbar-group reader-zoom" role="group" aria-label="Taille du texte">
+                <button type="button" class="btn-mini" id="reader-zoom-out" aria-label="Réduire le texte">−</button>
+                <span id="reader-zoom-level" class="hint">100 %</span>
+                <button type="button" class="btn-mini" id="reader-zoom-in" aria-label="Agrandir le texte">+</button>
+            </div>
+
+            {{ render_notes_toggle() }}
+        </div>
+
+        <div id="reader-viewport" class="reader-viewport epub-viewport">
+            <iframe id="epub-chapter-frame" class="epub-chapter-frame"
+                    sandbox="allow-same-origin" title="{{ book_title }}"></iframe>
+        </div>
+
+        {{ render_note_panel_markup(media['item_id'], note_text, note_updated_at, player_context) }}
+        {% endif %}
+    </div>
+
+    {% if not format_error and toc %}
+    <div class="playlist" id="playlist" style="visibility: hidden;">
+        {% for chapter in toc %}
+        <button type="button" class="file-row chapter-row" data-chapter-number="{{ loop.index }}">
+            <span class="file-number">{{ loop.index }}</span>
+            <span class="file-main">
+                <span class="file-title" title="{{ chapter.title }}">{{ chapter.title }}</span>
+            </span>
+        </button>
+        {% endfor %}
+    </div>
+    <noscript><style>#playlist { visibility: visible !important; }</style></noscript>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block print %}{{ render_print_block(media['item_title']) }}{% endblock %}
+
+{% block scripts %}
+{% if not format_error %}
+<script>
+(function () {
+    var mediaId = {{ media['id'] | tojson }};
+    var chapterCount = {{ chapter_count | tojson }};
+    var resumeChapter = {{ (resume_chapter or 1) | tojson }};
+    // Même principe que ?p= sur le lecteur PDF : un repère explicite
+    // ouvre directement au chapitre visé, sans pour autant écraser la
+    // position enregistrée tant que l'utilisateur n'a pas vraiment lu
+    // depuis là (voir lastSavedChapter plus bas).
+    var openedAtMarker = {{ opened_at_marker | tojson }};
+    var textScale = {{ (reading_text_scale or 1.0) | tojson }};
+    var chapterTitles = {{ (toc | map(attribute='title') | list) | tojson }};
+    // Mode d'affichage : défilement continu par défaut, ou chapitre par
+    // chapitre - décidé avec Gautier, mémorisé séparément du mode/zoom
+    // du lecteur PDF (colonne epub_reading_mode, comme reading_text_scale
+    // est séparée de reading_zoom : un réglage par type de lecteur).
+    var mode = {{ (epub_reading_mode or 'scroll') | tojson }};
+
+    var viewport = document.getElementById('reader-viewport');
+    var frame = document.getElementById('epub-chapter-frame');
+    var pageInput = document.getElementById('reader-page-input');
+    var pageTotalLabel = document.getElementById('reader-page-total');
+    var zoomLevelLabel = document.getElementById('reader-zoom-level');
+    var modeScrollBtn = document.getElementById('reader-mode-scroll');
+    var modeChapterBtn = document.getElementById('reader-mode-chapter');
+    var prevPageBtn = document.getElementById('reader-prev-page');
+    var nextPageBtn = document.getElementById('reader-next-page');
+    var zoomInBtn = document.getElementById('reader-zoom-in');
+    var zoomOutBtn = document.getElementById('reader-zoom-out');
+    var playlist = document.getElementById('playlist');
+
+    var currentChapter = resumeChapter;
+
+    function clampChapter(n) {
+        return Math.max(1, Math.min(n, chapterCount || 1));
+    }
+
+    function updateZoomLabel() {
+        zoomLevelLabel.textContent = Math.round(textScale * 100) + ' %';
+    }
+
+    function updateModeButtons() {
+        modeScrollBtn.setAttribute('aria-pressed', String(mode === 'scroll'));
+        modeChapterBtn.setAttribute('aria-pressed', String(mode === 'chapter'));
+    }
+
+    function updateChapterFields() {
+        pageInput.value = currentChapter;
+        // Porte le titre du chapitre affiché, lu par _note_widget.html
+        // au moment d'insérer un repère (voir insertMarker, branche
+        // "epub") - un repère vise ce que dit la table des matières,
+        // jamais un numéro seul.
+        pageInput.dataset.chapterTitle = chapterTitles[currentChapter - 1] || '';
+        pageTotalLabel.textContent = chapterCount || '—';
+        prevPageBtn.disabled = currentChapter <= 1;
+        nextPageBtn.disabled = currentChapter >= chapterCount;
+
+        if (playlist) {
+            Array.prototype.forEach.call(playlist.querySelectorAll('.chapter-row'), function (row) {
+                var isCurrent = parseInt(row.dataset.chapterNumber, 10) === currentChapter;
+                row.classList.toggle('current', isCurrent);
+            });
+        }
+    }
+
+    // --- Sauvegarde du chapitre courant ----------------------------------
+    // Même filet que les autres lecteurs : intervalle + fermeture
+    // d'onglet, plus à chaque changement de chapitre réel (navigation
+    // explicite en mode chapitre, ou détection du chapitre le plus
+    // visible en mode défilement - voir plus bas).
+    var lastSavedChapter = openedAtMarker ? currentChapter : null;
+
+    function saveChapter(useBeacon) {
+        if (!currentChapter || currentChapter === lastSavedChapter) {
+            return;
+        }
+        lastSavedChapter = currentChapter;
+        var body = new URLSearchParams({page_number: currentChapter});
+
+        if (useBeacon && navigator.sendBeacon) {
+            navigator.sendBeacon(
+                '/media/' + mediaId + '/progress',
+                new Blob([body.toString()], {type: 'application/x-www-form-urlencoded'})
+            );
+            return;
+        }
+
+        fetch('/media/' + mediaId + '/progress', {method: 'POST', body: body});
+    }
+
+    function setCurrentChapter(n) {
+        if (n === currentChapter) {
+            return;
+        }
+        currentChapter = n;
+        updateChapterFields();
+        saveChapter(false);
+    }
+
+    setInterval(function () { saveChapter(false); }, 30000);
+
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'hidden') {
+            saveChapter(true);
+        }
+    });
+    window.addEventListener('pagehide', function () {
+        saveChapter(true);
+    });
+
+    // --- Préférences (taille du texte, mode) ------------------------------
+    // Réglage de l'application, jamais du livre (comme le zoom/mode du
+    // lecteur PDF) - anti-rebond identique (même principe que la
+    // sauvegarde différée des notes, _note_widget.html).
+    function savePreference(fields) {
+        var body = new URLSearchParams(fields);
+        fetch('/preferences', {method: 'POST', body: body});
+    }
+
+    var scaleSaveTimer = null;
+    function scheduleScaleSave() {
+        clearTimeout(scaleSaveTimer);
+        scaleSaveTimer = setTimeout(function () {
+            savePreference({reading_text_scale: textScale});
+        }, 900);
+    }
+
+    // --- Hauteur bornée à la hauteur visible, défilement interne --------
+    // Même mécanisme que .playlist et que le lecteur PDF (voir
+    // CLAUDE.md) : seule cette zone défile, jamais la page entière.
+    var VIEWPORT_PADDING = 16;
+    var VIEWPORT_BOTTOM_MARGIN = 20;
+
+    function computeAvailableHeightFrom(top) {
+        return Math.max(200, window.innerHeight - top - VIEWPORT_BOTTOM_MARGIN);
+    }
+
+    function computeAvailableHeight() {
+        return computeAvailableHeightFrom(viewport.getBoundingClientRect().top);
+    }
+
+    // Position et hauteur de la table des matières, alignées sur le
+    // cadre de lecture - même règle que la playlist vidéo (voir
+    // CLAUDE.md, "Hauteur et position des colonnes latérales") : plus
+    // d'ancrage collant (elle défile avec la page comme #reader-viewport
+    // lui-même), son sommet aligné sur celui du cadre (elle n'a pas de
+    // titre/barre d'outils au-dessus, contrairement à lui), sa hauteur
+    // calculée pour s'arrêter ~20px avant le bas de la fenêtre quand la
+    // page est en haut.
+    function applyPlaylistBounds() {
+        if (!playlist) {
+            return;
+        }
+        playlist.style.marginTop = '0px';
+        var viewportDocTop = viewport.getBoundingClientRect().top + window.scrollY;
+        var playlistDocTop = playlist.getBoundingClientRect().top + window.scrollY;
+        var offset = Math.max(0, viewportDocTop - playlistDocTop);
+        playlist.style.marginTop = offset + 'px';
+        var alignedDocTop = playlistDocTop + offset;
+        playlist.style.maxHeight =
+            Math.max(200, window.innerHeight - alignedDocTop - VIEWPORT_BOTTOM_MARGIN) + 'px';
+    }
+
+    function applyViewportBounds() {
+        viewport.style.maxHeight = computeAvailableHeight() + 'px';
+        applyPlaylistBounds();
+    }
+
+    // Un chapitre n'a pas de taille fixe (pas de canevas comme le PDF)
+    // : l'iframe est agrandie à la hauteur réelle de son contenu (un ou
+    // plusieurs chapitres empilés en mode défilement), mesurée depuis la
+    // page (sandbox="allow-same-origin", sans allow-scripts - le contenu
+    // ne peut pas exécuter de script, mais reste lisible depuis
+    // l'extérieur).
+    function resizeFrameToContent() {
+        try {
+            var doc = frame.contentDocument;
+            if (doc && doc.body) {
+                // doc.documentElement.scrollHeight ne convient pas ici :
+                // pour l'élément racine, la spec le plafonne à AU MOINS
+                // la hauteur de la fenêtre (ici, la hauteur actuelle de
+                // l'iframe elle-même) - un dézoom du texte ne le fait
+                // donc jamais redescendre en dessous de la hauteur
+                // précédente, plus grande, laissant une bande blanche
+                // sous le texte. doc.body n'est pas la racine et n'a pas
+                // ce plancher : sa scrollHeight reflète la vraie hauteur
+                // du contenu, à la hausse comme à la baisse.
+                frame.style.height = Math.max(doc.body.scrollHeight, 100) + 'px';
+            }
+        } catch (e) {
+            /* ne devrait pas arriver (allow-same-origin) - filet */
+        }
+    }
+
+    function applyTextScale() {
+        try {
+            if (frame.contentDocument && frame.contentDocument.body) {
+                // Posée sur body, jamais par chapitre : héritée en CSS
+                // par tout chapitre déjà présent ET par tout chapitre
+                // ajouté plus tard en mode défilement (voir appendChapter/
+                // prependChapter) - rien à réappliquer à leur insertion.
+                frame.contentDocument.body.style.fontSize = textScale + 'em';
+            }
+        } catch (e) { /* filet, voir resizeFrameToContent */ }
+        resizeFrameToContent();
+    }
+
+    function setTextScale(newScale) {
+        textScale = Math.max(0.7, Math.min(newScale, 2.5));
+        updateZoomLabel();
+        scheduleScaleSave();
+        applyTextScale();
+    }
+
+    frame.addEventListener('load', function () {
+        applyTextScale();
+        viewport.scrollTop = 0;
+    });
+
+    // --- Mode "chapitre par chapitre" -------------------------------------
+    // Comportement d'origine, inchangé : un seul chapitre à la fois,
+    // rechargé entièrement dans l'iframe à chaque navigation.
+    function loadChapterDocument(n) {
+        currentChapter = clampChapter(n);
+        frame.removeAttribute('srcdoc');
+        frame.src = '/media/' + mediaId + '/epub-chapter/' + currentChapter;
+        updateChapterFields();
+        saveChapter(false);
+    }
+
+    // --- Mode "défilement continu" -----------------------------------
+    // Un seul document persistant dans l'iframe (assigné une fois via
+    // srcdoc), les chapitres y sont ajoutés au fil de la lecture plutôt
+    // que de remplacer le document à chaque changement - voir CLAUDE.md,
+    // "Lecteur EPUB", pour la discussion complète (coût sur un livre de
+    // 88 chapitres, absence de saut de défilement). Toujours aucun
+    // script dans l'iframe : seul du HTML déjà assaini côté serveur
+    // (même route /epub-chapter/<n> que le mode chapitre) y est inséré.
+    // Fond neutre sur body (même #26323A que --color-border, une valeur
+    // fixe : les variables CSS de l'application ne traversent pas la
+    // frontière de l'iframe) derrière des chapitres blancs avec ombre
+    // et marge entre eux - même principe que la séparation des pages du
+    // PDF (.reader-page/#reader-pages), pour que chaque chapitre reste
+    // une feuille distincte plutôt qu'un long bloc de texte continu.
+    // margin en !important sur body : la propre feuille de style d'un
+    // chapitre (ajoutée après celle-ci, voir ensureStylesheets) ne doit
+    // jamais pouvoir lui redonner une marge - vu en pratique, l'iframe
+    // se retrouvait alors avec son propre défilement interne en plus de
+    // celui de #reader-viewport (deux barres de défilement superposées).
+    var SCROLL_SHELL_HTML = '<!doctype html><html><head><meta charset="utf-8">' +
+        '<style>html{margin:0;padding:0;}' +
+        'body{margin:0 !important;padding:20px;background:#26323A;color:#111;' +
+        'font-family:Georgia,"Times New Roman",serif;line-height:1.6;}' +
+        '.epub-chapter{background:#fff;padding:20px;' +
+        'box-shadow:0 1px 6px rgba(0,0,0,0.35);}' +
+        '.epub-chapter+.epub-chapter{margin-top:20px;}' +
+        'img{max-width:100%;height:auto;}table{max-width:100%;}</style>' +
+        '</head><body>' +
+        '<div id="sentinel-top" style="height:1px;"></div>' +
+        '<div id="chapters-container"></div>' +
+        '<div id="sentinel-bottom" style="height:1px;"></div>' +
+        '</body></html>';
+
+    // Bornes du chapitre le plus ancien/récent actuellement dans le DOM
+    // - toujours une plage contiguë, jamais de trou (voir CLAUDE.md) :
+    // un saut arbitraire (repère, reprise, sommaire loin des chapitres
+    // déjà chargés) réinitialise cette plage à un seul chapitre plutôt
+    // que de charger tout ce qui a été sauté.
+    var loadedMin = null;
+    var loadedMax = null;
+    var chapterFetchInFlight = {};
+
+    // Même principe que suppressVisibilityBriefly du lecteur PDF : une
+    // navigation programmée (flèches, sommaire, repère, reprise) ne doit
+    // pas être interprétée comme un changement naturel de chapitre
+    // pendant qu'elle stabilise le défilement.
+    var SUPPRESS_VISIBILITY_MS = 700;
+    var suppressVisibilityUntil = 0;
+
+    function suppressVisibilityBriefly() {
+        suppressVisibilityUntil = Date.now() + SUPPRESS_VISIBILITY_MS;
+    }
+
+    // Ni le suivi du chapitre le plus visible, ni le déclenchement des
+    // sentinelles ne peuvent passer par IntersectionObserver ici : les
+    // chapitres, sentinelles comprises, vivent dans le DOCUMENT DE
+    // L'IFRAME, tandis que #reader-viewport (la zone qui défile
+    // réellement) vit dans le document parent - un IntersectionObserver
+    // ne peut pas observer une cible dans un document différent de son
+    // root, il ne se déclenche alors simplement jamais (constaté : aucun
+    // chapitre suivant ne se chargeait jamais en descendant dans le
+    // livre). Remplacé par un calcul manuel de géométrie, combinant le
+    // rectangle de l'iframe dans le document parent et celui de chaque
+    // élément dans le document de l'iframe - même principe que
+    // scrollChapterIntoView plus bas -, réévalué à chaque défilement.
+    function rectInOuterDocument(elementRectInFrame) {
+        var frameRect = frame.getBoundingClientRect();
+        return {
+            top: frameRect.top + elementRectInFrame.top,
+            bottom: frameRect.top + elementRectInFrame.bottom
+        };
+    }
+
+    function fetchChapterFragment(n) {
+        return fetch('/media/' + mediaId + '/epub-chapter/' + n)
+            .then(function (response) { return response.text(); })
+            .then(function (html) {
+                var parsed = new DOMParser().parseFromString(html, 'text/html');
+                var styleHrefs = Array.prototype.map.call(
+                    parsed.querySelectorAll('link[rel="stylesheet"]'),
+                    function (link) { return link.getAttribute('href'); }
+                );
+                return {bodyHTML: parsed.body.innerHTML, styleHrefs: styleHrefs};
+            });
+    }
+
+    function ensureStylesheets(shellDoc, hrefs) {
+        hrefs.forEach(function (href) {
+            if (!href) {
+                return;
+            }
+            var alreadyPresent = Array.prototype.some.call(
+                shellDoc.querySelectorAll('link[rel="stylesheet"]'),
+                function (link) { return link.getAttribute('href') === href; }
+            );
+            if (!alreadyPresent) {
+                var link = shellDoc.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = href;
+                // Une feuille de style externe charge de façon
+                // asynchrone : resizeFrameToContent, appelé juste après
+                // l'insertion du chapitre, mesure alors une hauteur
+                // d'avant son application (polices, marges propres au
+                // livre pas encore prises en compte). Sans ce second
+                // passage une fois la feuille chargée, l'iframe pouvait
+                // rester trop petite pour son contenu final - constaté :
+                // un défilement interne à elle en plus de celui de
+                // #reader-viewport, l'inverse du bug déjà corrigé
+                // (marge de body) mais avec le même symptôme.
+                link.addEventListener('load', resizeFrameToContent);
+                shellDoc.head.appendChild(link);
+            }
+        });
+    }
+
+    function buildChapterSection(shellDoc, n, fragment) {
+        var section = shellDoc.createElement('section');
+        section.className = 'epub-chapter';
+        section.dataset.chapter = String(n);
+        section.innerHTML = fragment.bodyHTML;
+        // Même raison que pour ensureStylesheets ci-dessus : une image
+        // pas encore chargée au moment du redimensionnement synchrone
+        // grandit ensuite sans que rien ne redéclenche la mesure -
+        // constaté sur "La boîte à outils" (chapitres avec de grandes
+        // images), l'iframe restant trop petite pour son contenu final.
+        Array.prototype.forEach.call(section.querySelectorAll('img'), function (img) {
+            if (!img.complete) {
+                img.addEventListener('load', resizeFrameToContent);
+                img.addEventListener('error', resizeFrameToContent);
+            }
+        });
+        return section;
+    }
+
+    // Ratio d'une section actuellement visible dans #reader-viewport -
+    // même principe que intersectionRatio (part de sa PROPRE hauteur
+    // visible, pas part de l'écran), pour rester comparable entre un
+    // chapitre très court et un chapitre très long.
+    function visibleRatio(elementRectInFrame) {
+        var outer = rectInOuterDocument(elementRectInFrame);
+        var viewportRect = viewport.getBoundingClientRect();
+        var visibleTop = Math.max(outer.top, viewportRect.top);
+        var visibleBottom = Math.min(outer.bottom, viewportRect.bottom);
+        var visibleHeight = Math.max(0, visibleBottom - visibleTop);
+        var totalHeight = outer.bottom - outer.top;
+        return totalHeight > 0 ? visibleHeight / totalHeight : 0;
+    }
+
+    function evaluateCurrentChapterFromScroll() {
+        if (Date.now() < suppressVisibilityUntil) {
+            return;
+        }
+        var shellDoc = frame.contentDocument;
+        if (!shellDoc) {
+            return;
+        }
+        // Le dernier chapitre d'un livre peut être très court (une page
+        // de fin, un colophon) : décidé avec Gautier, avoir atteint le
+        // bas du contenu chargé, quand ce contenu va jusqu'au tout
+        // dernier chapitre, veut dire avoir atteint ce dernier chapitre
+        // - peu importe la portion d'écran qu'il occupe par ailleurs.
+        // Priorité sur la comparaison de ratios ci-dessous, qui suffit
+        // pour tous les autres chapitres.
+        var atBottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 2;
+        if (atBottom && loadedMax === chapterCount) {
+            setCurrentChapter(chapterCount);
+            return;
+        }
+        var best = null;
+        var bestRatio = 0;
+        Array.prototype.forEach.call(shellDoc.querySelectorAll('.epub-chapter'), function (section) {
+            var ratio = visibleRatio(section.getBoundingClientRect());
+            if (ratio > bestRatio) {
+                bestRatio = ratio;
+                best = parseInt(section.dataset.chapter, 10);
+            }
+        });
+        if (best) {
+            setCurrentChapter(best);
+        }
+    }
+
+    // Charge le chapitre suivant/précédent dès que sa sentinelle
+    // s'approche de la zone visible (marge de préchargement), plutôt
+    // que d'attendre qu'elle y soit déjà - même principe de marge que le
+    // rendu progressif des pages du lecteur PDF.
+    var SENTINEL_PRELOAD_MARGIN = 800;
+
+    function checkSentinels() {
+        var shellDoc = frame.contentDocument;
+        if (!shellDoc) {
+            return;
+        }
+        var viewportRect = viewport.getBoundingClientRect();
+
+        if (loadedMax !== null && loadedMax < chapterCount && !chapterFetchInFlight[loadedMax + 1]) {
+            var sentinelBottom = shellDoc.getElementById('sentinel-bottom');
+            var bottomRect = rectInOuterDocument(sentinelBottom.getBoundingClientRect());
+            if (bottomRect.top <= viewportRect.bottom + SENTINEL_PRELOAD_MARGIN) {
+                appendChapter(loadedMax + 1).then(checkSentinels);
+            }
+        }
+
+        if (loadedMin !== null && loadedMin > 1 && !chapterFetchInFlight[loadedMin - 1]) {
+            var sentinelTop = shellDoc.getElementById('sentinel-top');
+            var topRect = rectInOuterDocument(sentinelTop.getBoundingClientRect());
+            if (topRect.bottom >= viewportRect.top - SENTINEL_PRELOAD_MARGIN) {
+                prependChapter(loadedMin - 1).then(checkSentinels);
+            }
+        }
+    }
+
+    // Ajoute un chapitre après le dernier déjà chargé, jamais avant :
+    // n'affecte que ce qui est sous le point de lecture actuel, donc
+    // aucun saut de défilement (voir CLAUDE.md).
+    function appendChapter(n) {
+        if (n < 1 || n > chapterCount || chapterFetchInFlight[n]) {
+            return Promise.resolve();
+        }
+        chapterFetchInFlight[n] = true;
+        return fetchChapterFragment(n).then(function (fragment) {
+            delete chapterFetchInFlight[n];
+            var shellDoc = frame.contentDocument;
+            if (!shellDoc) {
+                return;
+            }
+            ensureStylesheets(shellDoc, fragment.styleHrefs);
+            var section = buildChapterSection(shellDoc, n, fragment);
+            shellDoc.getElementById('chapters-container').appendChild(section);
+            loadedMax = n;
+            resizeFrameToContent();
+            evaluateCurrentChapterFromScroll();
+        });
+    }
+
+    // Ajoute un chapitre avant le premier déjà chargé : pousse le
+    // contenu déjà affiché vers le bas à l'intérieur de l'iframe, donc
+    // compense aussitôt le défilement extérieur de la même valeur pour
+    // que rien ne bouge visuellement - technique standard pour un ajout
+    // "vers le haut" (voir CLAUDE.md).
+    function prependChapter(n) {
+        if (n < 1 || chapterFetchInFlight[n]) {
+            return Promise.resolve();
+        }
+        chapterFetchInFlight[n] = true;
+        return fetchChapterFragment(n).then(function (fragment) {
+            delete chapterFetchInFlight[n];
+            var shellDoc = frame.contentDocument;
+            if (!shellDoc) {
+                return;
+            }
+            ensureStylesheets(shellDoc, fragment.styleHrefs);
+            var section = buildChapterSection(shellDoc, n, fragment);
+            var container = shellDoc.getElementById('chapters-container');
+            var heightBefore = shellDoc.body.scrollHeight;
+            var scrollBefore = viewport.scrollTop;
+            container.insertBefore(section, container.firstChild);
+            var heightAfter = shellDoc.body.scrollHeight;
+            resizeFrameToContent();
+            viewport.scrollTop = scrollBefore + (heightAfter - heightBefore);
+            loadedMin = n;
+            evaluateCurrentChapterFromScroll();
+        });
+    }
+
+    // Positionne le défilement extérieur (#reader-viewport, qui porte
+    // tout le défilement - l'iframe elle-même n'en a jamais, elle est
+    // toujours agrandie à son contenu) sur le début d'un chapitre déjà
+    // chargé.
+    function scrollChapterIntoView(n) {
+        suppressVisibilityBriefly();
+        var shellDoc = frame.contentDocument;
+        var section = shellDoc && shellDoc.querySelector('.epub-chapter[data-chapter="' + n + '"]');
+        if (section) {
+            var viewportRect = viewport.getBoundingClientRect();
+            var frameRect = frame.getBoundingClientRect();
+            var sectionRect = section.getBoundingClientRect();
+            var target = viewport.scrollTop + (frameRect.top + sectionRect.top) - viewportRect.top;
+            viewport.scrollTop = Math.max(0, target);
+        }
+        setCurrentChapter(n);
+    }
+
+    // Réinitialise le document persistant sur un seul chapitre - jamais
+    // tout ce qui le précède : un saut direct (sommaire, repère, reprise)
+    // loin de ce qui est déjà chargé ne doit jamais charger les chapitres
+    // sautés (voir CLAUDE.md, coût sur un livre de 88 chapitres).
+    function openScrollAt(n) {
+        n = clampChapter(n);
+        loadedMin = null;
+        loadedMax = null;
+        chapterFetchInFlight = {};
+        suppressVisibilityBriefly();
+
+        function onShellReady() {
+            frame.removeEventListener('load', onShellReady);
+            fetchChapterFragment(n).then(function (fragment) {
+                var shellDoc = frame.contentDocument;
+                ensureStylesheets(shellDoc, fragment.styleHrefs);
+                var section = buildChapterSection(shellDoc, n, fragment);
+                shellDoc.getElementById('chapters-container').appendChild(section);
+                loadedMin = n;
+                loadedMax = n;
+                applyTextScale();
+                viewport.scrollTop = 0;
+                // setCurrentChapter ne fait rien si n égale déjà
+                // currentChapter (cas normal à l'ouverture, où
+                // currentChapter vaut déjà le chapitre de reprise) - or
+                // les champs affichés (numéro, titre du repère, ligne du
+                // sommaire) n'ont eux jamais encore été mis à jour à ce
+                // stade. Mise à jour explicite, comme loadChapterDocument
+                // le fait pour le mode chapitre.
+                currentChapter = n;
+                updateChapterFields();
+                saveChapter(false);
+                checkSentinels();
+                suppressVisibilityBriefly();
+            });
+        }
+        frame.addEventListener('load', onShellReady);
+        frame.srcdoc = SCROLL_SHELL_HTML;
+    }
+
+    // --- Aiguillage commun aux deux modes ---------------------------------
+    function goToChapter(n) {
+        n = clampChapter(n);
+        if (mode === 'chapter') {
+            loadChapterDocument(n);
+            return;
+        }
+        if (loadedMin !== null && n >= loadedMin && n <= loadedMax) {
+            scrollChapterIntoView(n);
+            return;
+        }
+        if (n === loadedMax + 1) {
+            suppressVisibilityBriefly();
+            appendChapter(n).then(function () { scrollChapterIntoView(n); });
+            return;
+        }
+        if (n === loadedMin - 1) {
+            suppressVisibilityBriefly();
+            prependChapter(n).then(function () { scrollChapterIntoView(n); });
+            return;
+        }
+        openScrollAt(n);
+    }
+
+    function setMode(newMode) {
+        if (newMode === mode) {
+            return;
+        }
+        mode = newMode;
+        updateModeButtons();
+        savePreference({epub_reading_mode: mode});
+        if (mode === 'chapter') {
+            loadChapterDocument(currentChapter);
+        } else {
+            openScrollAt(currentChapter);
+        }
+    }
+
+    // --- Réglages des contrôles ------------------------------------------
+    modeScrollBtn.addEventListener('click', function () { setMode('scroll'); });
+    modeChapterBtn.addEventListener('click', function () { setMode('chapter'); });
+
+    prevPageBtn.addEventListener('click', function () { goToChapter(currentChapter - 1); });
+    nextPageBtn.addEventListener('click', function () { goToChapter(currentChapter + 1); });
+
+    pageInput.addEventListener('change', function () {
+        var value = parseInt(pageInput.value, 10);
+        if (!Number.isNaN(value)) {
+            goToChapter(value);
+        }
+    });
+
+    zoomInBtn.addEventListener('click', function () { setTextScale(textScale + 0.1); });
+    zoomOutBtn.addEventListener('click', function () { setTextScale(textScale - 0.1); });
+
+    if (playlist) {
+        Array.prototype.forEach.call(playlist.querySelectorAll('.chapter-row'), function (row) {
+            row.addEventListener('click', function () {
+                goToChapter(parseInt(row.dataset.chapterNumber, 10));
+            });
+        });
+        playlist.style.visibility = 'visible';
+    }
+
+    // Flèches au clavier - un chapitre à la fois dans les deux modes
+    // (en défilement, une flèche avance/recule d'un chapitre entier,
+    // le défilement naturel à la molette/barre reste le moyen de lire
+    // en continu).
+    document.addEventListener('keydown', function (event) {
+        if (event.target && (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA')) {
+            return;
+        }
+        if (event.key === 'ArrowLeft') {
+            goToChapter(currentChapter - 1);
+        } else if (event.key === 'ArrowRight') {
+            goToChapter(currentChapter + 1);
+        }
+    });
+
+    // Réévalue le chapitre courant et les sentinelles à chaque
+    // défilement naturel (molette, barre) - remplace les
+    // IntersectionObserver, impossibles ici (voir plus haut). Anti-
+    // rebond par setTimeout, jamais requestAnimationFrame : un onglet en
+    // arrière-plan peut suspendre indéfiniment les callbacks de rAF
+    // (constaté dans cet environnement de test), ce qui bloquerait tout
+    // suivi du chapitre courant tant que l'onglet n'est pas au premier
+    // plan - un comportement de lecture bien réel (onglet mis de côté
+    // pendant la lecture), pas seulement un artefact de test.
+    var scrollEvalScheduled = false;
+
+    viewport.addEventListener('scroll', function () {
+        if (mode !== 'scroll' || scrollEvalScheduled) {
+            return;
+        }
+        scrollEvalScheduled = true;
+        setTimeout(function () {
+            scrollEvalScheduled = false;
+            evaluateCurrentChapterFromScroll();
+            checkSentinels();
+        }, 100);
+    });
+
+    // --- Chargement -----------------------------------------------------
+    applyViewportBounds();
+    updateZoomLabel();
+    updateModeButtons();
+    if (mode === 'chapter') {
+        loadChapterDocument(currentChapter);
+    } else {
+        openScrollAt(currentChapter);
+    }
+
+    window.addEventListener('resize', function () {
+        applyViewportBounds();
+    });
+})();
+</script>
+
+{{ render_note_panel_script(note_panel_left, note_panel_top, note_panel_width, note_panel_height) }}
+{% endif %}
+{% endblock %}

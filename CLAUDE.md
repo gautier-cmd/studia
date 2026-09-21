@@ -108,7 +108,7 @@ mais n'écrit pas de code et ne corrige pas une commande lui-même.
 Item (un dossier de premier niveau) contient des Media et des Resources.
 Le concept Lesson d'OfflineU est abandonné.
 
-Tables SQLite, schéma version 6 :
+Tables SQLite, schéma version 9 :
 schema_info, users, items, media, resources, progress, book_search,
 book_candidates, notes, media_chapters, preferences.
 
@@ -132,9 +132,13 @@ book_candidates, notes, media_chapters, preferences.
 
     preferences   user_id (clé), reading_mode ('scroll'|'paginated'),
                   reading_zoom (multiplicateur, NULL = zoom par
-                  défaut) — réglages du lecteur PDF, un seul par
-                  utilisateur, jamais par livre. Voir "Lecteur PDF"
-                  plus bas.
+                  défaut), reading_text_scale (multiplicateur, NULL =
+                  taille par défaut — lecteur EPUB),
+                  epub_reading_mode ('scroll'|'chapter'),
+                  note_panel_left/top/width/height (position/taille du
+                  panneau de notes flottant) — réglages des lecteurs
+                  PDF et EPUB, un seul par utilisateur, jamais par
+                  livre. Voir "Lecteur PDF" et "Lecteur EPUB" plus bas.
 
     book_search      item_id (clé), query, searched_at — dernière
                      recherche lancée pour un item livre
@@ -207,17 +211,33 @@ par tri naturel (10 après 9).
                             à cette page (repère, l'emporte sur la
                             reprise, n'écrase pas la position tant que
                             rien n'est relu depuis là)
-    /media/<media_id>/file  sert le fichier vidéo, audio ou PDF (Range
-                            HTTP géré par Flask, permet d'avancer/reculer)
+    /read-epub/<media_id>   lecteur EPUB : défilement continu par
+                            chapitre, table des matières, taille de
+                            texte, reprise en chapitres, panneau de
+                            notes flottant (repris du lecteur PDF) ;
+                            ?c=<chapitre> ouvre directement ce chapitre
+                            (repère, mêmes règles que ?p= pour le PDF) ;
+                            EPUB3 sans NCX -> message de format illisible
+    /media/<media_id>/epub-chapter/<n>      HTML assaini d'un chapitre
+                                             EPUB, rendu dans l'iframe
+                                             sandboxée du lecteur
+    /media/<media_id>/epub-asset/<chemin>   sert un actif interne d'un
+                                             EPUB (image, police, CSS
+                                             réassaini) ; refuse ".."
+    /media/<media_id>/file  sert le fichier vidéo, audio ou PDF/EPUB
+                            (Range HTTP géré par Flask, permet
+                            d'avancer/reculer)
 
     POST /media/<media_id>/progress   enregistre la position de lecture
-                                       (position_seconds vidéo/audio, ou
-                                       page_number pour un livre)
+                                       (position_seconds vidéo/audio,
+                                       page_number pour un livre PDF ou
+                                       chapitre courant pour un EPUB)
     POST /preferences                 enregistre le mode de lecture, le
-                                       zoom et/ou la position/taille du
-                                       panneau de notes du lecteur PDF
-                                       (réglages de l'application, pas
-                                       d'un livre)
+                                       zoom, la taille de texte EPUB
+                                       (reading_text_scale) et/ou la
+                                       position/taille du panneau de
+                                       notes flottant (réglages de
+                                       l'application, pas d'un livre)
 
     POST /item/<id>/book-search                        lance une recherche
     POST /item/<id>/book-candidate/<id>/accept          valide un candidat
@@ -948,13 +968,14 @@ réutilisable comme point de départ.
 
 Lecteurs prévus, dans cet ordre : vidéo (fait), sauvegarde de la
 position de lecture (fait, voir ci-dessous), audio/M4B (fait, voir
-ci-dessous), PDF (fait, voir "Lecteur PDF" plus bas), EPUB. La
-progression vient juste après la vidéo parce qu'elle ne se pose
-qu'une fois et sert ensuite à tous les lecteurs suivants, plutôt que
-d'être refaite à chacun.
+ci-dessous), PDF (fait, voir "Lecteur PDF" plus bas), EPUB (fait, voir
+"Lecteur EPUB" plus bas). La progression vient juste après la vidéo
+parce qu'elle ne se pose qu'une fois et sert ensuite à tous les
+lecteurs suivants, plutôt que d'être refaite à chacun.
 
 Progression selon le type : secondes pour vidéo et audio, page pour un
-livre PDF (fait), position pour EPUB (pas encore fait).
+livre PDF (fait), chapitre pour un livre EPUB (fait) — voir "Les trois
+règles du « terminé », côte à côte" plus haut.
 
 ### Sauvegarde de la position de lecture (vidéo, fait)
 
@@ -982,10 +1003,32 @@ requêtes et une route.
   quels sous ce plafond pour une vidéo courte. **Cette règle est
   propre aux médias temporels (vidéo, audio)** : un livre a sa propre
   règle, différente et volontairement sans marge — voir
-  `is_book_completed` dans "Lecteur PDF" plus bas. Les deux règles du
-  « terminé » cohabitent délibérément dans le projet, chacune adaptée
-  à son type ; une future tranche sur un nouveau type de média ne doit
-  pas en réinventer une troisième sans y réfléchir d'abord.
+  `is_book_completed` dans "Lecteur PDF" plus bas.
+
+  **Les trois règles du « terminé », côte à côte.** Le projet a trois
+  unités de progression différentes, une par famille de média, et
+  chacune a sa propre définition de « terminé » — volontairement, pas
+  par oubli :
+  1. **Temps** (vidéo, audio) — `is_video_completed` : à moins de 5 %
+     de la durée totale, plafonné à 15 secondes. Une position, pas un
+     compteur discret : une marge a du sens parce qu'on ne s'arrête
+     jamais pile sur la dernière milliseconde.
+  2. **Pages** (livre PDF) — `is_book_completed` : dernière page
+     atteinte, sans aucune marge. Une page est une unité discrète et
+     déjà coordonnée dans le document ; il n'y a pas de raison de
+     tolérer un écart.
+  3. **Chapitres** (livre EPUB) — même fonction `is_book_completed`,
+     réutilisée telle quelle : un EPUB n'a pas de pages fixes (le
+     texte se recompose selon la fenêtre et la taille du texte), donc
+     `media.page_count` et `progress.page_number` sont réinterprétés
+     comme « nombre de chapitres » et « index du chapitre courant ».
+     Dernier chapitre atteint = terminé, sans marge, même principe que
+     la page pour un PDF. Voir "Lecteur EPUB" plus bas.
+
+  Ces trois règles cohabitent délibérément dans le projet, chacune
+  adaptée à son unité ; une future tranche sur un nouveau type de
+  média ne doit pas en réinventer une quatrième sans y réfléchir
+  d'abord.
 - **Coche définitive.** Une fois vraie, `completed` ne redescend
   jamais automatiquement — revenir en arrière dans une vidéo déjà
   terminée continue de mettre à jour la position, mais ne retire pas
@@ -1241,8 +1284,6 @@ toujours de `compute_item_progress_percent` via `fetch_item_media_progress`.
   `.playlist` fixe). Reste à confirmer par Gautier : la distinction
   animé/instantané elle-même (dépend de `document.referrer`, non
   vérifiable en naviguant par URL directe dans cette suite).
-
-`pytest tests/` (187 tests) au vert.
 
 ### Hauteur et position des colonnes latérales (fait)
 
@@ -1931,6 +1972,27 @@ cette page, la note identique des deux côtés.
   (`body.page-player .modal-note .note-card { margin-top: 0 }`) : une
   règle moins qualifiée aurait perdu face à elle par spécificité, quel
   que soit l'ordre des deux dans le fichier.
+  **Poignée de redimensionnement invisible sur fond sombre**, signalé
+  dans la foulée : la poignée native du navigateur (coin bas-droit,
+  `resize: both`) n'était indiquée par rien. Un motif décoratif (trois
+  traits diagonaux, `repeating-linear-gradient` découpé en triangle par
+  `clip-path`, couleur `--color-text-secondary`) est posé par-dessus en
+  `::after`, avec `pointer-events: none` pour ne jamais intercepter le
+  geste réel - la poignée native en dessous continue de fonctionner et
+  de changer le curseur au survol sans rien de plus à écrire, c'est un
+  comportement natif de `resize`, pas quelque chose que ce dégradé
+  pilote.
+  **Bug trouvé par Gautier : l'icône débordait sur le coin arrondi du
+  panneau et se retrouvait sur le fond clair de la page (blanc sur
+  blanc).** Posée à 2px du coin, elle tombait dans la zone que
+  `border-radius: 16px` découpe - au plus près du vrai coin, cette zone
+  ne montre que ce qu'il y a DERRIÈRE le panneau (la page de lecture,
+  claire), jamais son propre fond. Corrigé en la rentrant à 15px (juste
+  au-delà du rayon de 16px, le point le plus proche du coin reste dans
+  la partie réellement peinte du panneau) - couleur déjà
+  `--color-text-secondary` (le gris discret du projet, jamais du blanc)
+  depuis le début, invisible seulement tant qu'elle débordait sur du
+  clair.
 - **Menu ⋮ retiré du panneau de notes**, une seule entrée ("Imprimer")
   ne justifiait pas un menu à ouvrir - remplacé par un bouton unique
   (icône imprimante 🖨, infobulle "Imprimer"). Vérifié avant de
@@ -1946,19 +2008,21 @@ cette page, la note identique des deux côtés.
   réutiliser `.modal-close` (sémantiquement "ferme quelque chose", pas
   "imprime") ou `.hero-menu` (n'en est plus un).
 
-### Panneau de notes flottant : lecteur vidéo et lecteur audio (fait)
+### Panneau de notes flottant : lecteur vidéo (fait)
 
-Le lecteur vidéo abandonne son bloc de notes fixe sous la vidéo, et le
-lecteur audio le sien sous le lecteur `<audio>`, au profit du panneau
-flottant déjà en place dans les lecteurs PDF et EPUB (voir "Notes dans
-le lecteur PDF" plus haut) - décidé avec Gautier : repris tel quel,
-jamais adapté. Même composant (`_note_widget.html`, `floating=True`),
-même JS de glisser-déposer/redimensionnement/persistance, et surtout
-**même position/taille enregistrées** : `note_panel_left/top/width/
-height` viennent de la même table `preferences`, sans nouvelle colonne
-- un réglage d'application, pas un par lecteur. Vérifié : le panneau
-ouvert depuis `/watch` réapparaît exactement là où on l'a laissé en
-repartant de `/read` ou `/listen`, et inversement.
+Le lecteur vidéo abandonne son bloc de notes fixe sous la vidéo au
+profit du panneau flottant déjà en place dans les lecteurs PDF et EPUB
+(voir "Notes dans le lecteur PDF" plus haut) - décidé avec Gautier :
+repris tel quel, jamais adapté. Même composant (`_note_widget.html`,
+`floating=True`), même JS de glisser-déposer/redimensionnement/
+persistance (copié verbatim depuis `book_reader.html`/
+`epub_reader.html`, comme ces deux-là l'avaient déjà fait l'un de
+l'autre - toujours aucune seconde implémentation), et surtout **même
+position/taille enregistrées** : `note_panel_left/top/width/height`
+viennent de la même table `preferences`, sans nouvelle colonne - un
+réglage d'application, pas un par lecteur. Vérifié : le panneau ouvert
+depuis `/watch` réapparaît exactement là où on l'a laissé en repartant
+de `/read`, et inversement.
 
 - **Bouton "Notes"**, jamais dans `.nav-buttons` (Précédent/Suivant) :
   ce bloc est entièrement remplacé (`outerHTML`) à chaque changement de
@@ -1967,87 +2031,439 @@ repartant de `/read` ou `/listen`, et inversement.
   écouteur et son état (`aria-expanded`) à chaque navigation. Sa propre
   barre, en dessous, réutilise `.reader-toolbar`/`.reader-toolbar-group`
   des lecteurs PDF/EPUB (un seul groupe ici) plutôt qu'un nouveau
-  composant - même chose côté audio, sans le problème du remplacement
-  `outerHTML` (l'audiobook n'a ni Précédent ni Suivant).
+  composant.
 - **Bouton "Repère" déplacé dans le panneau**, comme "Insérer la page"
   (PDF) et "Insérer le chapitre" (EPUB) - en réalité, il y vivait déjà
   (`_note_widget.html` génère ce bouton dans son propre bloc d'outils
   selon `player_context.kind`, jamais un élément séparé posé dans le
   lecteur) : son déplacement visuel suit automatiquement celui du
-  panneau lui-même, sans rien de plus à coder. Pour la vidéo, seul son
-  libellé change, pour suivre la même forme "Insérer le/la ___" :
-  **"Insérer le repère"** (`title="Insérer le repère courant"`) -
-  "repère" reste le mot déjà établi dans le projet pour ce marqueur
-  temporel (vidéo/audio), plutôt qu'un nom inventé pour l'occasion.
-  Nouvelle branche `player_context.kind == 'video'` dans
-  `_note_widget.html`, distincte de la branche générique. Pour l'audio,
-  la branche générique existante (libellé "Repère") continue de
-  s'appliquer sans changement : un seul fichier, comme le PDF, rien à
-  répéter.
-- **Colonne de chapitres audio bornée comme la playlist vidéo**
-  (`applyPlaylistBounds`, `audio_player.html`) : même règle que
-  "Hauteur et position des colonnes latérales" plus haut, copiée telle
-  quelle plutôt que d'inventer un second mécanisme - sommet aligné sur
-  le lecteur `<audio>`, bas à 20px du bas de la fenêtre quand la page
-  est en haut, palier smartphone géré par le même seuil CSS. Avant
-  cette tranche, la colonne n'avait aucune borne du tout (`.playlist`
-  ne fixe plus ni position ni hauteur depuis "Hauteur et position des
-  colonnes latérales") et descendait indéfiniment sous l'écran.
+  panneau lui-même, sans rien de plus à coder. Seul son libellé change,
+  pour suivre la même forme "Insérer le/la ___" : **"Insérer le
+  repère"** (`title="Insérer le repère courant"`) - "repère" reste le
+  mot déjà établi dans le projet pour ce marqueur temporel (vidéo/
+  audio), plutôt qu'un nom inventé pour l'occasion. Nouvelle branche
+  `player_context.kind == 'video'` dans `_note_widget.html`,
+  distincte de la branche générique (devenue le repli pour l'audio
+  seul, qui garde "Repère" - hors périmètre de cette tranche).
 - **Hors périmètre, explicitement.** Le bloc de notes de la fiche
-  d'item (`item_detail.html`) - tranche à part.
+  d'item (`item_detail.html`) - tranche à part. Le lecteur audio
+  (`/listen`) garde son bloc de notes fixe pour l'instant.
 
-Vérifié dans le navigateur : panneau ouvert/fermé sur `/watch` et
-`/listen`, glissé et redimensionné (position/taille enregistrées,
-retrouvées sur `/read` immédiatement après), bouton "Insérer le
-repère"/"Repère" inséré avec le même format qu'avant, aucune régression
-sur le changement de vidéo sans rechargement. La playlist vidéo et la
-colonne de chapitres audio reprennent toute la hauteur libérée par la
-disparition du bloc de notes fixe (leur hauteur ne dépendait déjà que
-du haut du lecteur, jamais de ce qu'il y a en dessous - voir "Hauteur
-et position des colonnes latérales").
+Vérifié dans le navigateur : panneau ouvert/fermé sur `/watch`,
+glissé et redimensionné (position/taille enregistrées, retrouvées sur
+`/read` immédiatement après), bouton "Insérer le repère" inséré avec
+le même format qu'avant (`Vidéo N — titre — horodatage
+(/watch/id?t=secondes)`), aucune régression sur le changement de vidéo
+sans rechargement. La playlist reprend toute la hauteur libérée par la
+disparition du bloc de notes fixe (sa hauteur ne dépendait déjà que du
+haut de la vidéo, jamais de ce qu'il y a en dessous - voir "Hauteur et
+position des colonnes latérales").
 
-### Panneau de notes : poignée de redimensionnement à la main et gabarit partagé (fait)
+`pytest tests/` (298 tests) au vert.
 
-Deux problèmes distincts, réglés dans la même tranche parce que le
-second rendait le premier plus coûteux à corriger à sa place :
+### Lecteur EPUB (fait)
 
-- **Poignée de redimensionnement mal alignée**, signalé par Gautier :
-  le motif dessiné (rentré à 15px du coin, voir plus haut) et la zone
-  qui réagit réellement au glissement (la poignée native du
-  navigateur, `resize: both`, toujours calée dans le vrai coin) ne
-  coïncidaient pas - on tirait dans le vide entre les deux. Corrigé en
-  gérant le redimensionnement à la main : `resize: none` retire la
-  poignée native, un élément `.note-panel-resize-handle` porte à la
-  fois le motif ET les évènements pointer (`pointerdown`/`pointermove`/
-  `pointerup`, même schéma que le glisser-déposer de l'en-tête) - le
-  dessin est désormais la zone active, ils ne peuvent plus diverger.
-  Rentré à 6px du coin plutôt que 15px (calcul : au-delà de
-  16 × (1 − 1/√2) ≈ 4,69px, le point le plus proche du coin reste dans
-  la partie du panneau que le `border-radius` de 16px ne découpe pas -
-  6px donne une marge confortable sans flotter au milieu du panneau
-  comme le ferait 15px). Le `ResizeObserver` qui existait pour capter
-  un redimensionnement natif disparaît avec lui : le redimensionnement
-  étant désormais entièrement piloté par notre propre JS, sa fin
-  (`pointerup`) déclenche directement l'enregistrement, sans plus
-  avoir besoin d'observer la taille du dialogue ni de filtrer ses
-  propres changements programmatiques (`suppressNextPanelResizeSave`,
-  devenu inutile et retiré).
-- **Quatre copies du même panneau**, une par lecteur (PDF, EPUB, vidéo,
-  audio) - constaté en corrigeant le point précédent : la copie audio
-  avait justement été oubliée lors de la tranche précédente, exactement
-  le genre d'oubli qu'une implémentation dupliquée quatre fois finit
-  par produire. Factorisé dans `templates/_note_panel.html`, trois
-  macros important `render_note` (`_note_widget.html`) :
-  `render_notes_toggle()` (le bouton "Notes" de la barre d'outils),
-  `render_note_panel_markup(...)` (le `<dialog>`, avec la poignée de
-  redimensionnement) et `render_note_panel_script(...)` (ouverture/
-  fermeture/déplacement/redimensionnement/mémorisation) - trois macros
-  séparées parce qu'elles ne vivent pas dans la même partie de la page
-  (barre d'outils, contenu, scripts), jamais parce que leur contenu
-  diffère d'un lecteur à l'autre : un seul exemplaire de code pour les
-  quatre.
+Rend un livre EPUB lisible dans l'application (`/read-epub/<media_id>`),
+sur le modèle du lecteur PDF — même barre d'outils, même sidebar, même
+panneau de notes, mêmes décisions de progression déjà actées quand
+elles s'appliquaient encore. Décisions actées avec Gautier avant tout
+code (ARRÊT 1 : moteur de rendu, ARRÊT 2 : modèle de données) :
+progression en **chapitres**, jamais en pages (un EPUB n'a pas de page
+fixe, le texte se recompose selon la fenêtre et la taille du texte) ;
+« terminé » = dernier chapitre atteint, même principe que la dernière
+page d'un PDF ; pas de mode page par page (n'aurait aucun sens sans
+page fixe) — voir "Les trois règles du « terminé », côte à côte" plus
+haut.
 
-`pytest tests/` (263 tests) au vert.
+- **Décompression et rendu entièrement côté serveur, sans bibliothèque
+  tierce** — pas de PDF.js-like pour l'EPUB. Un EPUB est une archive
+  zip (`zipfile`, stdlib) contenant du XML (`xml.etree.ElementTree`,
+  stdlib) et du HTML (`bs4`/`BeautifulSoup`, déjà une dépendance du
+  projet via `presentation.py` — zéro nouvelle dépendance). Choisi
+  plutôt qu'une bibliothèque JS de lecture EPUB (type epub.js) parce
+  que la contrainte de sécurité de Gautier (« un EPUB contient du HTML
+  arbitraire, il ne doit pas pouvoir exécuter de script ni appeler le
+  réseau depuis Studia ») est plus simple à garantir en assainissant le
+  HTML une fois côté serveur qu'en configurant/auditant une
+  bibliothèque tierce qui exécute ce HTML côté client.
+- **EPUB2/NCX seulement** (décidé avec Gautier). `epub_book.py` lit
+  `META-INF/container.xml` pour trouver l'OPF (`content.opf`), puis
+  l'OPF pour trouver le NCX (`spine[toc]` → item du manifeste, avec un
+  repli sur `media-type="application/x-dtbncx+xml"`) et la table des
+  matières dans `<navMap>` du NCX. **Un EPUB3 sans NCX ne casse rien** :
+  l'absence de NCX lève `EpubFormatError`, `count_epub_chapters`
+  l'attrape et renvoie `None` (comme un PDF dont `pdfinfo` échoue), et
+  `/read-epub` affiche alors le même message que pour un format
+  illisible (« Ce livre utilise un format que Studia ne sait pas
+  encore lire »), au même endroit et dans le même esprit — jamais de
+  page cassée ni d'erreur technique. Vérifié par un test avec un EPUB3
+  minimal sans NCX fabriqué pour l'occasion (aucun exemplaire réel sous
+  la main).
+- **Un chapitre = un fichier du spine, dédupliqué** — pas une plage de
+  texte entre deux ancres. La table des matières d'un EPUB liste
+  souvent plusieurs `navPoint` pointant vers le même fichier (des
+  sous-titres internes), ce qui produirait sinon le même contenu rendu
+  plusieurs fois sous des chapitres presque identiques : constaté sur
+  le livre de test simple, 22 `navPoint` pour seulement 13 fichiers
+  distincts. `parse_table_of_contents` aplatit récursivement le
+  `navMap` dans l'ordre du document, résout chaque `src` (ancre
+  ignorée) et ne garde que la première entrée par fichier cible — le
+  titre de cette première entrée nomme le chapitre, les suivantes
+  pointant vers le même fichier sont ignorées comme sous-titres du même
+  chapitre. Contre-vérifié sur un second livre réel, structurellement
+  différent (correspondance 1:1 fichier/chapitre) : 88 `navPoint` pour
+  88 fichiers, aucune perte. Ceci évite aussi complètement le problème,
+  bien plus dur, de découper le HTML d'un fichier entre deux ancres :
+  un chapitre est toujours un fichier entier du spine.
+  **Bug trouvé en testant sur un vrai EPUB** : le `src` d'un
+  `<content>` du NCX doit se résoudre par rapport au dossier du NCX
+  lui-même, pas à celui de l'OPF — les deux peuvent différer (constaté
+  sur un EPUB Calibre réel où l'OPF vit dans `OEBPS/` mais le NCX et les
+  fichiers de contenu vivent à la racine de l'archive). Corrigé en
+  calculant `ncx_dir` et en s'en servant comme base de résolution, à la
+  place de `opf_dir` utilisé par erreur au premier essai.
+- **Sécurité en deux couches**, l'assainissement serveur et le sandbox
+  du navigateur se couvrant l'un l'autre :
+  1. `render_chapter` (via BeautifulSoup) supprime tous les `<script>`,
+     tous les attributs `on*=`, et les `<a href>` en entier (le texte du
+     lien est gardé, jamais le lien) ; toute URL avec un schéma explicite
+     (`http:`, `data:`...) ou commençant par `//` est retirée, seuls les
+     chemins relatifs internes sont réécrits vers une route Flask de
+     service d'actif (`/media/<id>/epub-asset/<chemin>`) ; le CSS
+     (balises `<style>` et attributs `style=`) subit le même traitement
+     (`url(...)` externes supprimées, `@import` retiré entièrement).
+  2. Le chapitre assaini est rendu dans un
+     `<iframe sandbox="allow-same-origin">` **sans** `allow-scripts` —
+     une garantie imposée par le navigateur, indépendante de la
+     complétude de l'assainisseur : même un script qui aurait échappé au
+     nettoyage ne peut pas s'exécuter. `allow-same-origin` est gardé
+     uniquement pour que la page parente puisse lire/écrire
+     `iframe.contentDocument` (mesure de hauteur, application de la
+     taille de texte), sans donner la moindre capacité d'exécution de
+     script au contenu encadré.
+  `/media/<id>/epub-asset/<chemin>` sert les images/polices/CSS internes
+  de l'archive (CSS réassaini au passage, reste servi tel quel) et
+  refuse tout chemin contenant `..` en défense en profondeur.
+- **Réutilisation du modèle de données existant, aucune nouvelle
+  colonne de progression** (décidé avec Gautier à l'ARRÊT 2) :
+  `media.page_count` devient « nombre de chapitres » et
+  `progress.page_number` devient « index du chapitre courant » pour un
+  `.epub` — même sens que pour un `.pdf`, juste une autre unité. Effet
+  direct : `is_book_completed`, `save_book_progress`,
+  `resolve_resume_page` et la branche livre de
+  `compute_item_progress_percent` fonctionnent pour l'EPUB **sans
+  aucune modification** — la meilleure confirmation que ce choix de
+  réutilisation tenait la route. Seul `probe_missing_media_info`
+  distingue les deux formats pour peupler `page_count` : `pdfinfo` pour
+  un `.pdf`, `count_epub_chapters` (compte les entrées de la table des
+  matières aplatie) pour un `.epub`.
+  `media_chapters`/`chapters_probed_at` (table de chapitres horodatés
+  des M4B) n'est délibérément **pas** réutilisée pour stocker la table
+  des matières d'un EPUB : un chapitre M4B a une dimension temporelle
+  qu'un chapitre EPUB n'a pas, l'analogie s'arrête à la ressemblance de
+  nom. La table des matières d'un EPUB est reparsée à la volée à chaque
+  ouverture de `/read-epub` et à chaque appel de `epub-chapter` (lecture
+  d'archive + parsing XML, sans sous-processus - assez bon marché pour
+  ne rien mettre en cache).
+  En revanche, `chapters_probed_at` (déjà posée sans condition par
+  `probe_missing_media_info` pour tout média, PDF ou EPUB compris,
+  avant même cette tranche) **est** réutilisée telle quelle pour un
+  usage inédit : distinguer « pas encore sondé » (`page_count` NULL et
+  `chapters_probed_at` NULL - le livre peut encore fonctionner) de
+  « format confirmé illisible » (`page_count` NULL mais
+  `chapters_probed_at` NOT NULL - un `--probe` a déjà échoué à compter
+  les chapitres) pour un `.epub` - zéro nouvelle colonne, zéro nouveau
+  suivi. Le hero n'affiche le message « format illisible » qu'une fois
+  ce second cas confirmé, jamais avant, exactement comme pour un PDF.
+- **`READABLE_BOOK_EXTENSIONS`** (tuple, remplace l'ancien
+  `READABLE_BOOK_EXTENSION` au singulier) contient désormais `.pdf` et
+  `.epub` ; `BOOK_READER_ENDPOINTS` (`{".pdf": "read_book", ".epub":
+  "read_epub_book"}`) aiguille le bouton hero, la remise à zéro de
+  progression et la playlist du Programme vers le bon lecteur selon
+  l'extension. Un livre dans un troisième format (MOBI, CBZ...)
+  continue d'afficher « Ce format ne peut pas encore être lu dans
+  l'application. », inchangé. **Bug évité de justesse** : élargir
+  `fetch_playable_media` aux deux extensions laissait un EPUB passer
+  aussi la garde de `/read` (le lecteur PDF), qui ne vérifiait que
+  `media_type == 'book'` sans vérifier l'extension — corrigé en ajoutant
+  la vérification `extension == '.pdf'` à `/read`, avant que ça ne soit
+  jamais visible en vrai (attrapé par un test existant qui a
+  échoué).
+- **Table des matières en colonne latérale, sur le modèle exact de la
+  playlist vidéo et de la liste de chapitres audio** (sticky, hauteur
+  bornée, défilement interne, chapitre courant surligné) — mêmes
+  classes CSS (`.playlist`, `.file-row`/`.chapter-row`, `.current`),
+  aucun nouveau CSS pour la sidebar elle-même.
+- **Taille de texte, mémorisée comme le zoom du PDF** : nouvelle colonne
+  `preferences.reading_text_scale` (REAL, nullable — schéma v8),
+  proposée à Gautier avant écriture. Appliquée par `applyTextScale()` en
+  agissant directement sur `iframe.contentDocument` (rendu possible par
+  `allow-same-origin` du sandbox, voir plus haut) - aucun rechargement
+  de page. Résumée : le lecteur ouvre à la dernière taille utilisée,
+  jamais un flash à la taille par défaut.
+- **Panneau de notes flottant, repris tel quel du lecteur PDF** - même
+  gabarit `<dialog class="modal modal-note">`, même JS (déplaçable,
+  redimensionnable, non modal, Échap et le bouton "Notes" seuls le
+  ferment), aucune seconde implémentation. Seule différence : le repère
+  cible un chapitre entier, jamais une position à l'intérieur (un
+  EPUB n'a pas de coordonnée stable dans un chapitre, contrairement à
+  une page de PDF).
+  **Texte du repère : le titre du chapitre, jamais son numéro** (décidé
+  avec Gautier) - `Tâche 2 : Conversion (/read-epub/12?c=9)`, pas
+  `Chapitre 9 (/read-epub/12?c=9)` : un numéro de chapitre ne dit rien
+  de ce qui a été marqué, contrairement au numéro de page d'un PDF qui
+  est une coordonnée en soi. Repli sur `Chapitre N` uniquement quand la
+  table des matières ne fournit aucun titre exploitable pour ce
+  chapitre. `MARKER_PATTERN` étendu pour reconnaître
+  `/read-epub/id?c=chapitre` en plus des motifs déjà connus.
+- **`/read-epub` accepte `?c=<chapitre>`**, même règle que `?p=` pour le
+  PDF : l'emporte toujours sur la reprise automatique, y compris sur un
+  livre déjà terminé, sans jamais écraser la position enregistrée tant
+  que rien n'a vraiment été relu depuis là (même mécanisme de
+  pré-enregistrement côté client que le PDF).
+- **Toolbar, sommaire, titre et fil d'Ariane toujours visibles**, comme
+  pour le lecteur PDF - aucun gabarit de site à adapter, la structure de
+  page est entièrement reprise de `_base.html`.
+- **Hors périmètre, explicitement, pour cette tranche.** Le lecteur PDF
+  lui-même, le modèle de notes, les fichiers de bibliothèque et les
+  montages réseau - rien de tout cela n'a été touché.
+
+Vérifié à l'œil : les deux EPUB de test ouverts (un livre simple à 13
+chapitres, un livre riche à 88 chapitres avec images), la table des
+matières des deux, le changement de taille de texte sans rechargement,
+la reprise après fermeture pour les deux livres, un repère inséré
+depuis le panneau avec le titre du chapitre (pas son numéro) et cliqué
+depuis la fiche pour ouvrir le bon chapitre, la fiche dans ses trois
+états (jamais ouvert, en cours, terminé - avec « Chapitre N sur M »
+dans la boîte « Tout recommencer »), la grille avec les deux nouveaux
+items EPUB et leurs pourcentages corrects, et un EPUB3 sans NCX
+fabriqué pour l'occasion affichant le message de format illisible sans
+page cassée.
+
+Limitation d'environnement constatée, sans lien avec cette tranche :
+dans cette session d'automatisation, l'onglet de test tourne en
+arrière-plan (`document.hidden`), ce qui empêche la touche Échap
+envoyée par l'outil de fermer le panneau de notes - reproduit à
+l'identique sur le lecteur PDF déjà validé, avec le même onglet, en
+comparant une pression clavier réelle (échoue) à un
+`dispatchEvent(KeyboardEvent('keydown', {key:'Escape'}))` direct en JS
+(fonctionne, ferme bien le panneau) : le gestionnaire d'évènement est
+donc correct, seule la simulation de touche de l'outil d'automatisation
+est affectée par l'arrière-plan de l'onglet, comme le rendu canevas déjà
+documenté plus haut pour le lecteur PDF.
+
+`pytest tests/` (291 tests) au vert.
+
+### Défilement continu EPUB (fait)
+
+Constat de Gautier à l'origine de cette tranche : il n'y avait pas de
+"mode page par page" à retirer dans l'EPUB - les flèches passaient déjà
+d'un chapitre entier à l'autre, conformément à la décision d'origine.
+Ce qui manquait, c'est l'enchaînement continu : arriver au bas d'un
+chapitre en faisant défiler doit faire apparaître le suivant dans le
+même mouvement, comme le lecteur PDF avec ses pages.
+
+- **Deux modes, comme le PDF : "Défilement" (par défaut) et "Chapitre
+  par chapitre".** Mémorisés dans une colonne séparée de celle du PDF
+  - `preferences.epub_reading_mode` (`'scroll'|'chapter'`, schéma v9),
+  proposée à Gautier puis écrite - même principe que
+  `reading_text_scale` séparée de `reading_zoom` : deux lecteurs, deux
+  réglages, même si conceptuellement proches. Le mode "Chapitre par
+  chapitre" est exactement le comportement déjà existant avant cette
+  tranche (un chapitre, un document, rechargé entièrement à chaque
+  navigation) - rien n'y a changé.
+- **Défilement continu : une seule iframe, un seul document
+  persistant** (assigné une fois via `iframe.srcdoc`), plutôt qu'un
+  document par chapitre. Les chapitres y sont ajoutés au fil de la
+  lecture (`<section class="epub-chapter" data-chapter="n">`), jamais
+  tous chargés d'un coup : une fenêtre contiguë `[loadedMin, loadedMax]`
+  s'étend vers le bas (`appendChapter`) ou vers le haut
+  (`prependChapter`) quand une sentinelle placée à chaque extrémité du
+  contenu chargé approche de l'écran visible (marge de préchargement de
+  800px, même principe que le rendu progressif des pages du PDF).
+  Ouvrir un livre au chapitre 80 sur 88 (repère, reprise, sommaire) ne
+  charge donc jamais les 79 chapitres qui précèdent - seul le chapitre
+  visé, puis ses voisins au fil du défilement dans un sens ou l'autre.
+  Toujours zéro changement serveur : chaque chapitre est récupéré via
+  la route `/media/<id>/epub-chapter/<n>` déjà existante, son `<body>`
+  et ses `<link rel="stylesheet">` extraits côté client avec
+  `DOMParser` puis insérés dans le document partagé (feuilles de style
+  dédupliquées par `href`) - toujours du HTML déjà assaini côté
+  serveur, jamais de script, sandbox inchangée.
+  **Vers le bas, un ajout ne déplace jamais ce qui est déjà affiché**
+  (aucun saut) : le nouveau chapitre est simplement inséré après le
+  dernier. **Vers le haut**, insérer avant pousse mécaniquement tout le
+  contenu déjà affiché plus bas à l'intérieur de l'iframe - compensé
+  aussitôt par un ajustement du défilement extérieur de la même valeur
+  (mesurée avant/après insertion), technique standard pour un ajout "en
+  amont" du point de lecture. C'est cette contrainte précise - la
+  hauteur d'un chapitre à venir n'est jamais connue avant de l'avoir
+  chargé, contrairement à une page de PDF - qui interdisait de reprendre
+  tel quel le mécanisme du PDF (des conteneurs vides pré-dimensionnés
+  pour chaque page, remplis paresseusement) : on ne réserve ici jamais
+  de place à l'avance, on ajoute puis on compense.
+- **Bug de conception trouvé en vérifiant dans le navigateur, avant
+  toute présentation à Gautier : `IntersectionObserver` ne peut pas
+  franchir la frontière iframe/document parent.** Le premier jet
+  observait les sentinelles et les sections de chapitre (qui vivent
+  dans le document de l'iframe) avec `root: viewport` (qui vit dans le
+  document parent) - aucune erreur, mais l'observateur ne se déclenchait
+  simplement jamais (confirmé par un test isolé : `.observe()` ne lève
+  rien, son callback n'est juste jamais appelé quand cible et racine
+  sont dans deux documents différents). Remplacé entièrement par un
+  calcul manuel de géométrie sur l'évènement `scroll` de
+  `#reader-viewport` : le rectangle de l'iframe dans le document parent
+  combiné à celui de chaque élément dans le document de l'iframe donne
+  sa position réelle par rapport à la zone visible, sans jamais avoir
+  besoin d'observer à travers la frontière. Sert à la fois à détecter
+  l'approche d'une sentinelle et à déterminer le chapitre qui occupe le
+  plus l'écran (même notion de ratio qu'`intersectionRatio` - part de
+  la propre hauteur du chapitre qui est visible, pas part de l'écran -
+  recalculée à la main plutôt que fournie par le navigateur).
+  **Second piège trouvé en corrigeant celui-ci** : l'anti-rebond de
+  cette réévaluation était d'abord posé sur `requestAnimationFrame` -
+  or un onglet en arrière-plan peut suspendre indéfiniment ses
+  callbacks (constaté : plus de 45 secondes sans une seule exécution
+  dans cet environnement de test). Un onglet de lecture mis de côté
+  pendant qu'on lit ailleurs n'a rien d'exotique - remplacé par un
+  anti-rebond `setTimeout` (100 ms), qui continue de fonctionner même
+  arrière-plan.
+- **Dernier chapitre très court (page de fin, colophon) : ne jamais
+  dépendre uniquement du ratio pour marquer le livre terminé.** Question
+  explicite de Gautier avant d'écrire cette partie. Un chapitre très
+  court qui devient entièrement visible atteint quand même un ratio de
+  1 (comme n'importe quel chapitre entièrement visible, sa propre
+  taille n'entre pas en compte) - la comparaison de ratios seule
+  s'en sortirait donc probablement déjà dans la plupart des cas. Mais
+  plutôt que de compter dessus, une règle explicite et prioritaire a
+  été ajoutée : avoir défilé jusqu'au tout bas du contenu chargé, quand
+  ce contenu va jusqu'au tout dernier chapitre du livre, veut dire avoir
+  atteint ce dernier chapitre - peu importe la portion d'écran qu'il
+  occupe par ailleurs. Vérifié en conditions réelles sur les deux livres
+  de test (13 et 88 chapitres) : défilement jusqu'au tout bas,
+  `page_number` enregistré à `chapter_count`, livre marqué terminé
+  (`completed = 1`, via `is_book_completed`, totalement inchangée).
+- **Bug trouvé en vérifiant la reprise après le premier essai** :
+  `setCurrentChapter` ne fait rien si le chapitre visé égale déjà
+  `currentChapter` - protection nécessaire pour ignorer les réévaluations
+  de ratio redondantes pendant un défilement naturel, mais qui empêchait
+  aussi la toute première mise à jour des champs affichés (numéro,
+  titre du repère, ligne du sommaire) à l'ouverture, puisque
+  `currentChapter` vaut déjà le chapitre de reprise dès l'initialisation
+  de la variable. `openScrollAt` met désormais ces champs à jour
+  explicitement à l'ouverture, sans passer par cette protection.
+- **Bande blanche au dézoom du texte (défauts d'affichage signalés par
+  Gautier).** `resizeFrameToContent` mesurait
+  `doc.documentElement.scrollHeight` - pour l'élément racine, la
+  spécification plafonne cette valeur à AU MOINS la hauteur actuelle de
+  l'iframe elle-même (rien à voir avec le contenu réel) : un dézoom qui
+  réduit la hauteur du texte ne faisait donc jamais redescendre la
+  hauteur de l'iframe sous sa valeur précédente, plus grande, laissant
+  une bande blanche croissante sous le texte à chaque cran de dézoom.
+  Confirmé par mesure (`body.scrollHeight` correctement plus petit après
+  dézoom, `documentElement.scrollHeight` bloqué à l'ancienne valeur).
+  Corrigé en mesurant `doc.body.scrollHeight` à la place : `<body>`
+  n'est pas la racine et n'a pas ce plancher, sa hauteur reflète
+  toujours le contenu réel, à la hausse comme à la baisse.
+- **Table des matières plus haute que la zone de lecture (second défaut
+  signalé).** `.playlist` reprenait le `max-height: calc(100vh - ...)`
+  purement CSS de `/watch`, pensé pour une colonne qui démarre en haut
+  de `.layout` - mais dans le lecteur, la table des matières démarre
+  bien plus haut que `#reader-viewport` (qui a un titre et une barre
+  d'outils au-dessus, elle n'a rien). Corrigée en donnant à `.playlist`
+  sa propre borne calculée en JS, ancrée à son propre sommet plutôt
+  qu'à celui du lecteur - même fonction (`computeAvailableHeightFrom`)
+  que celle déjà utilisée pour `#reader-viewport`, appliquée à son
+  propre `getBoundingClientRect().top`.
+  **Cette correction ne réglait que la hauteur, pas la position ni le
+  comportement au défilement** - toujours ancrée à l'écran
+  (`position: sticky`, hérité de la règle `.playlist` partagée avec
+  `/watch`) et toujours démarrée à son propre sommet plutôt qu'aligné
+  sur celui du cadre de lecture. Reproduit et corrigé avec le même bug,
+  sur la même colonne, trouvé sur la playlist vidéo - voir "Hauteur et
+  position des colonnes latérales" plus haut pour la règle commune aux
+  deux.
+
+- **Bug trouvé par Gautier : deux barres de défilement verticales
+  superposées, dans les deux modes.** L'iframe défilait à l'intérieur
+  d'elle-même EN PLUS de `#reader-viewport` - alors qu'elle doit
+  toujours être entièrement agrandie à son contenu, sans jamais
+  défiler elle-même (voir plus haut). Deux causes distinctes trouvées
+  par mesure (`documentElement.scrollHeight` comparé à
+  `body.scrollHeight` et à la hauteur réellement appliquée à
+  l'iframe) :
+  1. La propre feuille de style d'un chapitre, chargée après le
+     `<style>` du document partagé, pouvait redonner une marge à
+     `body` (constaté : ~6,7px en haut et en bas sur un livre réel) -
+     invisible pour `body.scrollHeight` (qui ne compte jamais sa
+     propre marge externe), mais bien compté par
+     `documentElement.scrollHeight`. Corrigé avec `margin: 0
+     !important` sur `body`, dans le document partagé du défilement
+     continu comme dans le document à chapitre unique
+     (`epub_chapter.html`) - jamais un livre ne doit pouvoir modifier
+     l'espacement du gabarit qui l'accueille.
+  2. `epub_chapter.html` posait aussi `padding: 20px` sur `html` ET
+     `body` à la fois (`html, body { ... }`) - les deux paddings se
+     cumulaient (l'un imbriqué dans l'autre, ~40px de trop), ni vus
+     par `body.scrollHeight` ni par le calcul de hauteur de l'iframe.
+     Corrigé en ne posant le padding que sur `body` (jamais sur
+     `html`, qui n'en a besoin nulle part ici).
+  3. **Second bug trouvé en vérifiant la correction précédente** :
+     une feuille de style externe ou une image d'un chapitre charge de
+     façon asynchrone - `resizeFrameToContent`, appelé juste après
+     l'insertion du chapitre, mesurait donc une hauteur d'avant leur
+     chargement complet, sans qu'aucun code ne redéclenche la mesure
+     une fois chargées. Constaté sur "La boîte à outils" (grandes
+     images) : l'iframe restait ~230px trop petite pour son contenu
+     réel. Corrigé en écoutant l'évènement `load` (et `error`) de
+     chaque nouvelle feuille de style et de chaque image pas encore
+     chargée, pour rappeler `resizeFrameToContent` une fois qu'elles
+     le sont.
+- **Séparation visible entre les chapitres en défilement continu**,
+  sur le modèle du PDF : fond neutre (`#26323A`, la valeur de
+  `--color-border` - fixe, les variables CSS de l'application ne
+  traversent pas la frontière de l'iframe) posé sur `body`, chaque
+  `.epub-chapter` gardant son propre fond blanc, son ombre légère et
+  un espace (`margin-top: 20px`) avec le chapitre suivant - chacun
+  reste une feuille distincte, jamais un long bloc de texte continu.
+- **Bug trouvé par Gautier, la correction précédente ne tenait pas :
+  la table des matières débordait toujours sur un livre long.** En la
+  revérifiant, le calcul lui-même (borne propre à `.playlist`, ancrée
+  à son propre sommet) s'est avéré correct dès la première mesure.
+  L'explication la plus probable : **Flask garde les gabarits Jinja
+  compilés en mémoire et ignore leurs modifications tant que le
+  serveur de développement n'est pas redémarré à la main** (constaté
+  plusieurs fois pendant cette tranche, y compris sur mes propres
+  vérifications) - un correctif peut donc être réellement dans le
+  fichier sans jamais atteindre un serveur déjà lancé. Plutôt que de
+  compter sur un redémarrage systématique (facile à oublier),
+  `app.config["TEMPLATES_AUTO_RELOAD"] = True` est maintenant posé
+  dans `create_app` : un gabarit modifié est repris à la requête
+  suivante, sans redémarrage. Rechargement des fichiers CSS/JS
+  statiques inchangé (ils n'ont jamais été mis en cause - Flask ne les
+  sert jamais depuis une copie en mémoire).
+
+Vérifié dans le navigateur : "La boîte à outils" (88 chapitres) ouvert
+au chapitre 1, chapitres suivants chargés au fil du défilement sans
+jamais empiler tout le livre, saut direct au chapitre 80 depuis le
+sommaire (charge uniquement autour de 80, pas les 79 précédents),
+défilement jusqu'au tout dernier chapitre (88) avec livre marqué
+terminé, fiche affichant « 100 % · chapitre 88 sur 88 » et le bouton
+« Revoir » ; même vérification de bout en bout sur "Guide de démarrage
+rapide" (13 chapitres) ; bascule "Chapitre par chapitre" ↔ "Défilement"
+dans les deux sens, avec persistance après rechargement ; un repère
+inséré en mode défilement (titre du chapitre) cliqué depuis la fiche
+ouvrant le bon chapitre ; dézoom du texte sans bande blanche ; une
+seule barre de défilement dans les deux modes, sur les deux livres ;
+séparation visible entre chapitres (fond neutre, ombre, feuilles
+distinctes) ; table des matières alignée sur la hauteur de la zone de
+lecture, vérifiée sur les deux livres et dans les deux modes ; panneau
+de notes déplacé, redimensionné et fermé par sa croix dans les deux
+lecteurs (en-tête glissable sur toute sa hauteur, ⋮ et croix côte à
+côte), position/taille retrouvées après rechargement, sans corruption
+même en fermant juste après un déplacement.
+
+`pytest tests/` (298 tests) au vert.
 
 ## Méthode — backlog
 
@@ -2133,6 +2549,15 @@ backlog plus difficile à corriger sans le signaler d'abord.
   sinon le panneau ment sans erreur visible. À supprimer le jour où la
   provenance sera stockée avec la couverture en cache plutôt que
   reconstruite.
+- Sur la vraie bibliothèque de Gautier, la couverture des livres
+  traités à la main pour OfflineU est encodée en base64 à l'intérieur
+  du fichier de présentation HTML, jamais posée à côté en `cover.jpg` :
+  `covers.py` (dossier de l'item, puis première page du PDF) ne la
+  trouvera donc jamais pour ces items. À traiter avec le module
+  d'import (voir plus bas) : en extraire l'image et la mettre en cache
+  comme un fichier séparé. Les fichiers de la bibliothèque ne doivent
+  jamais être modifiés pour ça — OfflineU tourne toujours dessus et a
+  besoin de ce base64 tel quel.
 - Métadonnées de formations par moissonnage des plateformes commerciales
   (TUTO.com, Udemy, LinkedIn, Elephorm...). Autorisé (usage strictement
   personnel, décision explicite de Gautier), mais pas encore fait : pas

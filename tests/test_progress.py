@@ -212,11 +212,16 @@ def library(tmp_path: Path) -> Path:
     book = root / "Adobe Illustrator CS6 (Adobe Press)"
     make_file(book / "livre.pdf")
 
-    # Un livre dans un format que BOOK_EXTENSIONS reconnaît mais que
-    # /read ne sait pas ouvrir (EPUB) : message "format illisible"
-    # toujours attendu pour celui-ci, contrairement au PDF ci-dessus.
+    # Un livre EPUB (lisible par /read-epub depuis cette tranche).
     epub_book = root / "Un livre EPUB (Auteur)"
     make_file(epub_book / "livre.epub")
+
+    # Un livre dans un format que BOOK_EXTENSIONS reconnaît mais
+    # qu'aucun lecteur ne sait ouvrir (MOBI) : message "format
+    # illisible" toujours attendu pour celui-ci, contrairement au PDF
+    # et à l'EPUB ci-dessus.
+    mobi_book = root / "Un livre MOBI (Auteur)"
+    make_file(mobi_book / "livre.mobi")
 
     # Aucune extension video/audio/book : item_type "document", donc
     # zero ligne dans `media` - le cas vise par la garde de vacuite.
@@ -952,11 +957,26 @@ def test_hero_livre_pdf_recoit_son_bouton_principal(client) -> None:
     assert "▶ Commencer" in data
 
 
-def test_hero_livre_non_pdf_sans_bouton_principal_menu_seul(client) -> None:
-    # Un format que /read ne sait pas ouvrir (EPUB) : toujours pas de
-    # lecteur, le menu ⋮ reste la seule action du hero - comportement
-    # inchangé pour ce cas, contrairement au PDF ci-dessus.
+def test_hero_livre_epub_recoit_son_bouton_principal(client) -> None:
+    # Depuis la tranche "Lecteur EPUB" : un livre EPUB a désormais son
+    # propre lecteur, donc un bouton principal comme le PDF - plus de
+    # message "format illisible" pour celui-ci.
     item_id = item_id_by_title(client, "Un livre EPUB (Auteur)")
+    media_id = media_id_by_relative_path(client, "livre.epub")
+    data = client.get(f"/item/{item_id}").data.decode()
+
+    assert "ne peut pas encore être lu" not in data
+    assert '<div class="hero-actions">' in data
+    assert f'href="/read-epub/{media_id}"' in data
+    assert "▶ Commencer" in data
+
+
+def test_hero_livre_non_pdf_non_epub_sans_bouton_principal_menu_seul(client) -> None:
+    # Un format qu'aucun lecteur ne sait ouvrir (MOBI) : toujours pas
+    # de lecteur, le menu ⋮ reste la seule action du hero -
+    # comportement inchangé pour ce cas, contrairement au PDF et à
+    # l'EPUB ci-dessus.
+    item_id = item_id_by_title(client, "Un livre MOBI (Auteur)")
     data = client.get(f"/item/{item_id}").data.decode()
 
     assert "ne peut pas encore être lu" in data
@@ -1616,7 +1636,7 @@ def test_message_format_illisible_absent_pour_audiobook(client) -> None:
 
 
 def test_message_format_illisible_present_pour_un_livre(client) -> None:
-    item_id = item_id_by_title(client, "Un livre EPUB (Auteur)")
+    item_id = item_id_by_title(client, "Un livre MOBI (Auteur)")
     response = client.get(f"/item/{item_id}")
 
     assert "ne peut pas encore être lu" in response.data.decode()
@@ -2026,9 +2046,23 @@ def test_lecteur_pdf_page_par_page_revient_en_haut_au_changement_de_page(
 
 
 def test_route_read_refuse_un_livre_non_pdf(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.mobi")
+
+    assert client.get(f"/read/{media_id}").status_code == 404
+
+
+def test_route_read_refuse_aussi_un_epub(client) -> None:
+    # /read est le lecteur PDF, pas un point d'entrée générique pour
+    # tout livre lisible - un EPUB a sa propre route (/read-epub).
     media_id = media_id_by_relative_path(client, "livre.epub")
 
     assert client.get(f"/read/{media_id}").status_code == 404
+
+
+def test_route_read_epub_refuse_un_pdf(client) -> None:
+    media_id = media_id_by_relative_path(client, "livre.pdf")
+
+    assert client.get(f"/read-epub/{media_id}").status_code == 404
 
 
 def test_route_read_refuse_une_video(client) -> None:

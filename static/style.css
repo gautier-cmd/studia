@@ -2127,6 +2127,27 @@ audio {
     background: transparent;
 }
 
+/* Lecteur EPUB : reprend .reader-viewport (hauteur bornée, défilement
+   interne - même mécanisme que le lecteur PDF et .playlist) pour la
+   zone de lecture. Un seul chapitre affiché à la fois (pas de mode
+   page par page ni de défilement multi-chapitres, décidé avec
+   Gautier), dans une iframe sandboxée sans allow-scripts - un EPUB
+   contient du HTML arbitraire, jamais exécuté (voir CLAUDE.md). */
+.epub-viewport {
+    display: flex;
+    justify-content: center;
+}
+
+.epub-chapter-frame {
+    display: block;
+    width: 100%;
+    max-width: 760px;
+    border: 0;
+    background: #fff;
+    border-radius: var(--radius-md);
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+}
+
 /* Tablette (720–1119px) : toujours côte à côte, mais le programme
    prend moins de place pour laisser de la place à la vidéo — le
    chapitre courant reste repliable comme sur desktop (point 30 de la
