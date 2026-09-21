@@ -30,6 +30,18 @@ mais n'écrit pas de code et ne corrige pas une commande lui-même.
    uniquement de la variable d'environnement, propre à chaque
    installation ; l'application doit fonctionner sans (la source
    correspondante devient juste indisponible, pas une erreur).
+7. Quand une bibliothèque tierce fournit un fichier (CSS, JavaScript, ou
+   autre chose qu'elle livre), on l'utilise tel quel. On ne réécrit pas
+   une version partielle « du minimum nécessaire » - décidé après le
+   bug de sélection de texte du lecteur PDF (voir "Lecteur PDF"),
+   coûteux en plusieurs séances : la feuille de style de PDF.js
+   réécrite à la main avait oublié des règles dont l'absence ne se
+   voyait sur aucun rendu de test, seulement sur une mesure précise et
+   un PDF particulier. Si une partie du fichier fourni doit
+   explicitement être écartée (une fonctionnalité entière que Studia
+   n'utilise pas, par exemple), la raison est écrite en commentaire à
+   côté de ce qui est repris, et ce qui est écarté est vérifié comme
+   réellement inutilisé dans notre propre code - jamais supposé.
 
 ## Environnement
 
@@ -1553,6 +1565,78 @@ la cohabitation des deux règles.
 - **Hors périmètre, explicitement, pour cette tranche.** Le lecteur
   EPUB, la recherche dans le texte, le sommaire interne du PDF. Les
   notes et les repères de page ont leur propre tranche, voir plus bas.
+- **Bug trouvé après coup par Gautier : sélection de texte décalée à
+  fort zoom (280 % et au-delà).** `.reader-page` et son canevas avaient
+  `max-width: 100%` : dès que la page zoomée dépassait la largeur du
+  cadre de lecture, le navigateur la réduisait visuellement pour
+  qu'elle y tienne. La couche de texte suivait cette même réduction
+  pour sa propre boîte, mais PDF.js positionne chaque mot à l'intérieur
+  d'après `--total-scale-factor` (le zoom réel, non réduit) - les mots
+  se retrouvaient donc placés comme si la page faisait sa taille
+  normale, alors qu'elle était affichée plus petite. Confirmé par
+  mesure : à 280 %, une page voulue à 1423 px de large était réduite à
+  1213 px par le CSS, désynchronisant la couche de texte du rendu
+  visible. Invisible à 100/170 % : la page zoomée tenait encore dans le
+  cadre, `max-width: 100%` ne faisait donc rien.
+  Corrigé en choisissant le débordement plutôt que la réduction, comme
+  n'importe quel lecteur PDF : `max-width: 100%` retiré de `.reader-page`
+  et de son canevas, `.reader-viewport` défile désormais aussi
+  horizontalement (`overflow-x: auto`) quand la page dépasse. Le zoom
+  maximal (400 %) n'a pas été abaissé pour éviter le problème : agrandir
+  un schéma dense est justement la raison de zoomer aussi fort.
+  **Second bug trouvé en corrigeant celui-ci** : `#reader-pages` centre
+  ses pages (`align-items: center`), et un centrage simple rend une
+  partie d'une page qui déborde purement et simplement inatteignable au
+  défilement - ni tout à gauche ni tout à droite du défilement
+  horizontal ne montraient le bord gauche de la page, une bande d'une
+  centaine de pixels restant coupée dans les deux cas. Corrigé avec le
+  mot-clé CSS `safe` (`align-items: safe center`) : bascule sur un
+  alignement au début dès que le centrage perdrait du contenu, sans
+  rien changer quand la page tient dans le cadre.
+  Vérifié par mesure exacte (largeur de la page, du canevas et de la
+  couche de texte, toutes trois identiques) à 100 %, 170 %, 280 % et
+  400 %, en défilement continu et en page par page, plus l'atteinte des
+  deux bords de la page par défilement horizontal aux deux extrémités
+  et la stabilité du défilement vertical pendant un défilement
+  horizontal.
+  **Troisième bug, trouvé par Gautier après cette vérification - le
+  vrai problème, différent du premier.** La vérification ci-dessus ne
+  contrôlait que les dimensions d'ensemble (page, canevas, conteneur
+  de la couche de texte) - jamais la position de chaque caractère à
+  l'intérieur. Gautier a mesuré au caractère près, sur ses propres
+  captures d'écran à 100 %, 150 % et 290 %, comparant ce qui est
+  surligné à l'écran à ce que renvoie `window.getSelection().toString()` :
+  décalage présent à TOUS les zooms (imperceptible à 100 %, net à
+  150 %, grossier à 290 %), grandissant le long de chaque ligne, et
+  variable d'une ligne à l'autre sur une même page - signature d'un
+  problème d'échelle horizontale appliqué mot par mot, pas d'un
+  glissement global de la couche (qui aurait décalé tout, dans le même
+  sens, quel que soit le zoom).
+  Cause trouvée dans `pdf.mjs` (classe `TextLayer`, méthode `#layout`
+  et `#appendText`) : pour chaque bloc de texte, PDF.js calcule et pose
+  en variables CSS `--font-height` (sa hauteur), `--scale-x` (le
+  facteur pour étirer horizontalement le texte dessiné avec la police
+  de substitution du navigateur jusqu'à la largeur réelle du texte dans
+  le PDF) et `--rotate` - mais ne pose JAMAIS directement `font-size` ni
+  `transform` en style : ces trois variables sont conçues pour être
+  consommées par des règles CSS, normalement fournies par le fichier
+  officiel `text_layer_builder.css` de PDF.js (jamais vendu ici, voir
+  plus haut) - que notre propre réécriture, en ne posant que
+  `transform-origin`, n'a jamais fournies. Sans elles, chaque bloc de
+  texte s'affichait à la taille de police par défaut du navigateur,
+  sans jamais être étiré pour compenser la police de substitution -
+  d'où un écart qui grandit caractère après caractère le long d'une
+  ligne, et qui grandit en pixels absolus avec le zoom (la même erreur
+  relative, sur un texte plus grand). Repris intégralement dans
+  `static/style.css` (comparé règle par règle à la version officielle
+  du paquet PDF.js utilisé, 6.3.289 - voir le commentaire au-dessus de
+  `.textLayer` pour le détail de ce qui a été gardé et pourquoi certaines
+  parties du fichier officiel - éditeur de surbrillance, images extraites
+  du texte - ne s'appliquent jamais à ce lecteur).
+  Vérifié par comparaison exacte entre le surlignage affiché et
+  `window.getSelection().toString()`, caractère par caractère, sur un
+  passage précis des deux livres PDF de test, à 100 %, 150 %, 290 % et
+  400 % - voir plus bas pour le détail.
 
 Vérifié à l'œil : le livre de test dans les deux modes, à zoom par
 défaut et agrandi, la reprise après fermeture, la fiche dans ses trois
@@ -1663,30 +1747,47 @@ actées.
   `pageViewport.scale`, la même échelle que le canevas : la couche
   suit donc le zoom sans code séparé, puisqu'un changement de zoom
   reconstruit déjà entièrement chaque page visible (canevas et
-  maintenant texte) via le même mécanisme existant. `--scale-round-x/y`
-  fixés à `1px` : normalement posés par le CSS du lecteur officiel de
-  PDF.js (`viewer.css`, volontairement pas vendu ici), fournis nous-
-  mêmes puisqu'on ne l'utilise pas. Un PDF sans texte (page scannée) ne
-  produit ni message ni erreur : aucune branche spéciale pour ce cas,
-  `page.streamTextContent()` renvoie simplement un flux vide et la
-  couche reste vide.
+  maintenant texte) via le même mécanisme existant. Un PDF sans texte
+  (page scannée) ne produit ni message ni erreur : aucune branche
+  spéciale pour ce cas, `page.streamTextContent()` renvoie simplement
+  un flux vide et la couche reste vide.
+  **Ce que « le minimum nécessaire » recouvre exactement**, précisé
+  après le bug de sélection décalée trouvé par Gautier (voir plus haut,
+  "Lecteur PDF") : PDF.js ne pose quasiment rien en style direct sur
+  chaque bloc de texte - seulement sa position (`left`/`top`) et sa
+  police (`fontFamily`). Tout le reste (taille de police, étirement
+  horizontal pour compenser une police de substitution, rotation, prise
+  en compte d'une taille de police minimale forcée par le navigateur)
+  passe par des variables CSS (`--font-height`, `--scale-x`, `--rotate`,
+  `--min-font-size`, `--scale-round-x/y`) que PDF.js pose mais ne
+  consomme jamais lui-même - c'est au CSS de le faire, normalement celui
+  du lecteur officiel (`text_layer_builder.css`, jamais vendu ici, voir
+  plus haut). « Le minimum nécessaire » veut donc dire : toutes les
+  règles qui consomment une variable que la classe `TextLayer` pose
+  quelque part (vérifié dans `pdf.mjs` méthode par méthode) - ni plus
+  (l'éditeur de surbrillance et les images extraites du texte, deux
+  classes jamais instanciées ici, n'ont pas leurs règles), ni moins :
+  une seule variable oubliée suffit à fausser la mise en page sans
+  provoquer la moindre erreur visible ailleurs.
   **Bug trouvé en écrivant cet ajout** : le mémo de rendu
   (`entry.renderTask`, qui empêche un second rendu concurrent de la
   même page) était relâché juste après le canevas, avant que la couche
   de texte ne soit construite - une navigation vers cette page pendant
   cette fenêtre aurait déclenché un second rendu en double. Corrigé en
   ne relâchant le mémo qu'une fois les deux étapes terminées.
-  Vérifié : sélection alignée sur le texte visible à 100% et 170% de
-  zoom, après un changement de mode (page par page ↔ défilement),
-  copier-coller réel d'une phrase du PDF vers la note. Non vérifié en
-  conditions réelles dans cette session : la fluidité du défilement sur
-  un livre de 507 pages - l'environnement de test de ce projet fait
-  tourner l'onglet en arrière-plan (`document.hidden`), qui ralentit
-  déjà fortement le rendu du canevas lui-même (limitation connue,
-  documentée plus haut) au point de rendre un ressenti de fluidité non
-  significatif ; la construction page par page (jamais eager) reste la
-  garantie structurelle contre un ralentissement à l'ouverture d'un
-  gros livre.
+  « Vérifié : sélection alignée... à 100 % et 170 % » annoncé à ce
+  stade, mais seulement à l'œil et sans comparer au caractère près -
+  insuffisant pour repérer le bug d'étirement horizontal trouvé bien
+  plus tard par Gautier (voir "Lecteur PDF"), qui ne se voit qu'en
+  confrontant le surlignage affiché au texte réellement sélectionné.
+  Non vérifié en conditions réelles dans cette session : la fluidité du
+  défilement sur un livre de 507 pages - l'environnement de test de ce
+  projet fait tourner l'onglet en arrière-plan (`document.hidden`), qui
+  ralentit déjà fortement le rendu du canevas lui-même (limitation
+  connue, documentée plus haut) au point de rendre un ressenti de
+  fluidité non significatif ; la construction page par page (jamais
+  eager) reste la garantie structurelle contre un ralentissement à
+  l'ouverture d'un gros livre.
 
 Vérifié à l'œil : panneau ouvert pendant qu'on fait défiler le PDF
 (rien ne se bloque), une sélection de texte dans le PDF collée dans la

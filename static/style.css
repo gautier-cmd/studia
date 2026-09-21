@@ -1908,20 +1908,58 @@ audio {
 
 /* Couche de texte sélectionnable posée par PDF.js par-dessus le
    canevas (voir renderTextLayerInto, book_reader.html) - texte
-   transparent, superposé pixel pour pixel au rendu visible. Règles
-   propres à la classe TextLayer de PDF.js, normalement fournies par le
-   CSS du lecteur officiel (viewer.css, volontairement pas vendu ici,
-   voir CLAUDE.md) : reprises ici pour ce que nécessite exactement
-   notre lecteur, pas le fichier complet. */
+   transparent, superposé pixel pour pixel au rendu visible.
+
+   Reprend, règle par règle, ce que exige la classe TextLayer de
+   pdf.mjs (constructeur + méthodes #layout/#appendText) - comparé le
+   21/09/2026 à la feuille officielle du même paquet PDF.js
+   (text_layer_builder.css, version 6.3.289) pour trouver ce qui
+   manquait encore après le bug de sélection décalée trouvé par
+   Gautier (voir CLAUDE.md, "Lecteur PDF" - --scale-x/--rotate posés
+   par PDF.js mais jamais consommés). Volontairement PAS repris tel
+   quel : le fichier officiel gère aussi l'éditeur de surbrillance
+   (.highlighting, .highlight, .selecting, .endOfContent,
+   .selectionRendering) et les images extraites du texte
+   (.textLayerImages) - deux fonctionnalités de la classe
+   AnnotationEditorLayer/TextLayerImages, jamais instanciées ici
+   (`renderTextLayerInto` n'utilise que la classe TextLayer nue, sans
+   `images` ni éditeur) : ces classes ne sont jamais posées sur nos
+   éléments, leurs règles seraient mortes. Tout le reste - y compris
+   ce qui semblait cosmétique (letter-spacing, word-spacing,
+   text-size-adjust) - est repris, car c'est précisément ce genre de
+   détail dont l'absence ne se voit sur aucun rendu de test mais fausse
+   la mesure de largeur d'un mot sur un PDF particulier. */
 .textLayer {
+    color-scheme: only light;
     position: absolute;
     inset: 0;
     overflow: clip;
+    opacity: 1;
     line-height: 1;
+    letter-spacing: normal;
+    word-spacing: normal;
     text-align: initial;
+    text-size-adjust: none;
     forced-color-adjust: none;
     transform-origin: 0 0;
-    z-index: 1;
+    caret-color: CanvasText;
+    z-index: 0;
+
+    /* La taille de police calculée plus bas (--text-scale-factor)
+       ignore le minimum de taille de police que certains navigateurs
+       imposent (réglage d'accessibilité) : sans ce détour, un texte
+       très petit dans le PDF (zoom faible) serait agrandi de force par
+       le navigateur pour respecter son minimum, sans que le facteur
+       d'échelle de PDF.js n'en soit informé - meilleure façon de le
+       découvrir sur un PDF particulier plutôt qu'en le corrigeant à
+       l'avance. --min-font-size est posé par pdf.mjs lui-même
+       (TextLayer, à la construction) : la valeur ci-dessous n'est
+       qu'un repli avant que le JS ne s'exécute.
+       --total-scale-factor est le seul des trois posé par notre
+       propre code (renderTextLayerInto). */
+    --min-font-size: 1;
+    --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+    --min-font-size-inv: calc(1 / var(--min-font-size));
 }
 
 .textLayer span,
@@ -1931,10 +1969,57 @@ audio {
     white-space: pre;
     cursor: text;
     transform-origin: 0% 0%;
+    user-select: text;
+}
+
+/* La taille et l'étirement horizontal de chaque bloc de texte, posés
+   par pdf.mjs via --font-height/--scale-x/--rotate (des variables CSS,
+   jamais des styles directs - voir #appendText/#layout dans
+   static/vendor/pdfjs/pdf.mjs) : sans les règles ci-dessous pour les
+   consommer, ces variables sont posées pour rien. C'est exactement le
+   bug trouvé par Gautier - --scale-x corrige l'écart entre la largeur
+   qu'occupe le texte une fois dessiné avec une police de substitution
+   du navigateur et sa largeur réelle dans le PDF, un écart qui ne se
+   voit qu'en zoomant et en comparant caractère par caractère, jamais
+   sur un simple contrôle des dimensions de la page/couche. */
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+    z-index: 1;
+    --font-height: 0;
+    font-size: calc(var(--text-scale-factor) * var(--font-height));
+    --scale-x: 1;
+    --rotate: 0deg;
+    transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+/* PDF.js regroupe parfois plusieurs blocs de texte dans un conteneur
+   de contenu balisé (`.markedContent`, posé par lui-même - voir
+   #processItems) : ce conteneur ne doit rien changer à la mise en
+   page de ses enfants (chacun positionné en absolu par rapport à
+   .textLayer, pas à lui), display: contents le retire entièrement du
+   rendu de boîte. */
+.textLayer .markedContent {
+    display: contents;
+}
+
+/* Bloc de texte remplaçant une image porteuse d'un texte alternatif
+   (PDF balisé/accessible) : jamais sélectionnable comme du vrai texte,
+   ce n'est pas ce qui est affiché. */
+.textLayer span[role="img"] {
+    user-select: none;
+    cursor: default;
 }
 
 .textLayer ::selection {
     background: rgba(0, 100, 255, 0.3);
+    color: transparent;
+}
+
+/* Contourne https://github.com/mozilla/pdf.js/issues/13840 : sans ça,
+   Chrome peut afficher un retour à la ligne sélectionné comme un trait
+   visible. */
+.textLayer br::selection {
+    background: transparent;
 }
 
 /* Tablette (720–1119px) : toujours côte à côte, mais le programme
