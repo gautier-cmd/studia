@@ -282,11 +282,9 @@ coexistent, aucun n'est un repli pour l'autre.
 Un seul champ texte par item, édité et affiché dans le même panneau
 flottant partagé (`templates/_note_panel.html`, `_note_widget.html`)
 depuis la fiche de l'item et depuis chacun des quatre lecteurs - un
-bouton "Notes" l'ouvre à chaque endroit, jamais une variante par
-écran. Modifier la note à un endroit la met à jour partout ailleurs au
-prochain chargement de page, puisque c'est la même donnée et le même
-composant (détail des lecteurs : "Panneau de notes flottant : lecteur
-vidéo" ; détail de la fiche : "Notes sur la fiche d'item", plus bas).
+bouton "Notes" l'ouvre à chaque endroit, jamais une variante par écran
+(détail des lecteurs : "Panneau de notes flottant : lecteur vidéo" ;
+détail de la fiche : "Notes sur la fiche d'item", plus bas).
 
 - Enregistrement automatique après une pause de frappe (900 ms), et
   immédiatement si l'onglet est masqué ou fermé (navigator.sendBeacon,
@@ -2049,9 +2047,10 @@ de `/read`, et inversement.
   `player_context.kind == 'video'` dans `_note_widget.html`,
   distincte de la branche générique (devenue le repli pour l'audio
   seul, qui garde "Repère" - hors périmètre de cette tranche).
-- **Lecteur audio (`/listen`), même commit.** `audio_player.html`
-  adopte le même panneau flottant que la vidéo, apporté par ce même
-  commit (`a386396`) - pas une tranche séparée.
+- **Lecteur audio (`/listen`).** `audio_player.html` utilise le même
+  panneau flottant partagé (`_note_panel.html`), avec le même bouton
+  d'ouverture et les mêmes préférences de position/taille que les
+  trois autres lecteurs (apporté par `a386396`, pas resté en arrière).
 - **Hors périmètre, explicitement, à ce stade.** Le bloc de notes de
   la fiche d'item (`item_detail.html`) - tranche à part, faite depuis
   (voir "Notes sur la fiche d'item" plus bas).
